@@ -14,15 +14,26 @@ import matplotlib.pyplot as plt
 # gaps drift UP with more nsweeps), so we treat this as a *one-sided* systematic:
 #   σ_+ on ̄M = drift size  (̄M could be this much higher with full convergence)
 #   σ_- on ̄M = 0           (we never observe downward drift)
-# Other systematics (k_max, maxdim) are smaller and lumped into a small floor.
-SYS_FLOOR = 0.003  # quadrature floor: maxdim + k_max systematics
+# Other systematics (k_max, maxdim) are smaller and lumped into an L-dependent
+# floor:
+#   L=4  -> 0      (exact diagonalisation; no DMRG/k_max/maxdim systematics)
+#   L=6  -> 0.001  (DMRG present but bond dim and k_max truncation tiny)
+#   L≥8  -> 0.003  (real maxdim+k_max systematics)
+def _sys_floor(L):
+    if L <= 4: return 0.0
+    if L <= 6: return 0.001
+    return 0.003
 EMPIRICAL_DRIFT_UP = {
-    # L → {boundary → drift size}
-    8:  {"OBC": 0.0003, "PBC": 0.0044},
-    10: {"OBC": 0.0016, "PBC": 0.0009},
-    12: {"OBC": 0.0026, "PBC": 0.0009},
-    14: {"OBC": 0.0027, "PBC": 0.0015},
-    16: {"OBC": 0.0051, "PBC": 0.0063},
+    # L → {boundary → drift size}.  Most-recent nsweeps doubling per L:
+    #   L=8:  nsw=160 → 640
+    #   L=10: nsw=320 → 640
+    #   L=12,14: nsw=160 → 320 (nsw=640 still running)
+    #   L=16: nsw=320 → 640
+    8:  {"OBC": 0.00002, "PBC": 0.00076},  # nsw=160→640
+    10: {"OBC": 0.00052, "PBC": 0.00142},  # nsw=320→640
+    12: {"OBC": 0.0026,  "PBC": 0.0009},   # nsw=160→320 (gauge nsw=640 done, claude still running)
+    14: {"OBC": 0.0027,  "PBC": 0.0015},   # nsw=160→320 (nsw=640 running)
+    16: {"OBC": 0.0051,  "PBC": 0.0063},   # nsw=320→640
 }
 
 DATA = Path("/home/hlamm/Desktop/QC/circuit_knitting/data")
@@ -43,28 +54,33 @@ LEN16 = {
     "z2-gauge":  DATA/"L16_nsw640/z2_gauge_theory",
     "z2-claude": DATA/"L16_nsw640/z2_claude",
 }
-# L=8 from 4 seeds (2 local + 2 lenore) at nsweeps=160
+# L=6 from 4 seeds local at nsweeps=640 (tighter than single-seed prod)
+LEN6 = {
+    "z2-gauge":  DATA/"L6_nsw640/z2_gauge_theory",
+    "z2-claude": DATA/"L6_nsw640/z2_claude",
+}
+# L=8 from 4 seeds local at nsweeps=640 (most converged)
 LEN8 = {
-    "z2-gauge":  DATA/"L8_nsw160/z2_gauge_theory",
-    "z2-claude": DATA/"L8_nsw160/z2_claude",
+    "z2-gauge":  DATA/"L8_nsw640/z2_gauge_theory",
+    "z2-claude": DATA/"L8_nsw640/z2_claude",
 }
-# L=10 from 4 seeds on lenore at nsweeps=320 (tighter convergence test)
+# L=10 from 4 seeds local at nsweeps=640 (most converged + warm-start states saved)
 LEN10 = {
-    "z2-gauge":  DATA/"L10_nsw320/z2_gauge_theory",
-    "z2-claude": DATA/"L10_nsw320/z2_claude",
+    "z2-gauge":  DATA/"L10_nsw640/z2_gauge_theory",
+    "z2-claude": DATA/"L10_nsw640/z2_claude",
 }
-# L=12 from 4 seeds on lenore at nsweeps=320 (both codes)
+# L=12: 4 seeds × 2 codes at nsweeps=640 (fully done)
 LEN12 = {
-    "z2-gauge":  DATA/"L12_nsw320/z2_gauge_theory",
-    "z2-claude": DATA/"L12_nsw320/z2_claude",
+    "z2-gauge":  DATA/"L12_nsw640/z2_gauge_theory",
+    "z2-claude": DATA/"L12_nsw640/z2_claude",
 }
-# L=14 from 4 seeds on lenore at nsweeps=320 (both codes)
+# L=14: gauge nsw=640 (done), claude nsw=320 (still running nsw=640)
 LEN14 = {
-    "z2-gauge":  DATA/"L14_nsw320/z2_gauge_theory",
+    "z2-gauge":  DATA/"L14_nsw640/z2_gauge_theory",
     "z2-claude": DATA/"L14_nsw320/z2_claude",
 }
 
-def load_prod(path, L_list=(4, 6)):
+def load_prod(path, L_list=(4,)):
     """Return {(L, bdy): (gap, sigma)}."""
     out = {}
     for r in csv.DictReader(path.open()):
@@ -101,6 +117,7 @@ def load_4seed(dirpath, L_list=(14,)):
 data = {code: {} for code in PROD}
 for code in PROD:
     data[code].update(load_prod(PROD[code]))
+    data[code].update(load_4seed(LEN6[code],  L_list=(6,)))
     data[code].update(load_4seed(LEN8[code],  L_list=(8,)))
     data[code].update(load_4seed(LEN10[code], L_list=(10,)))
     data[code].update(load_4seed(LEN12[code], L_list=(12,)))
@@ -147,7 +164,7 @@ ax.errorbar(shift(L_c_pbc, +0.08), g_c_pbc, yerr=s_c_pbc, fmt="s--", color="tab:
             capsize=4, markersize=7, mfc="none", label="PBC z2-claude")
 ax.set_ylabel(r"$\bar M = \bar{\rm gap}$  (spectral 1st moment, $O_{p=0}$)", fontsize=12)
 ax.set_title(r"FV at $(m_0=0.1,\ \eta=0.5,\ \alpha=1,\ bg=(-1,-1))$" + "\n"
-             r"$k_{max}=30$, maxdim=300, nsweeps=640 ($L=16$) / 320 ($L=10,12,14$) / 160 ($L=8$); 4 seeds at $L \geq 8$",
+             r"$k_{max}=30$, maxdim=300, nsweeps=640 ($L=8,10,16$) / 320 ($L=12,14$); 4 seeds at $L \geq 8$",
              fontsize=11)
 ax.legend(loc="center right", fontsize=10, ncol=2)
 ax.grid(True, alpha=0.3)
@@ -168,8 +185,9 @@ err_plus  = []   # toward zero
 err_minus = []   # more negative
 for L, _d, e_stat in zip(Ls_diff, diffs, errs):
     drift = EMPIRICAL_DRIFT_UP.get(L, {"OBC": 0.0, "PBC": 0.0})
-    sigp_OBC = math.sqrt(drift["OBC"]**2 + SYS_FLOOR**2)
-    sigp_PBC = math.sqrt(drift["PBC"]**2 + SYS_FLOOR**2)
+    floor_L = _sys_floor(L)
+    sigp_OBC = math.sqrt(drift["OBC"]**2 + floor_L**2)
+    sigp_PBC = math.sqrt(drift["PBC"]**2 + floor_L**2)
     err_plus.append(math.sqrt(e_stat**2 + sigp_OBC**2))
     err_minus.append(math.sqrt(e_stat**2 + sigp_PBC**2))
 yerr_asym = [err_minus, err_plus]   # matplotlib wants [lower, upper]
@@ -208,7 +226,6 @@ def _f_invL2(L, a, b):          return a + b/L**2
 def _f_invL_plus_invL2(L, a, b, c): return a + b/L + c/L**2
 def _f_invL_beta(L, a, b, beta):    return a + b/L**beta
 def _f_exp(L, a, b, m):         return a + b*np.exp(-m*L)
-
 fit_specs = [
     ("$a + b/L$",            _f_invL,            [0.0, -0.3],         "tab:purple"),
     ("$a + b/L^2$",          _f_invL2,           [0.0, -2.0],         "tab:olive"),
@@ -216,6 +233,15 @@ fit_specs = [
     ("$a + b/L^\\beta$",     _f_invL_beta,       [0.0, -0.3, 1.0],    "tab:pink"),
     ("$a + b e^{-mL}$",      _f_exp,             [0.0, -0.3, 0.2],    "tab:brown"),
 ]
+
+def _fmt_value_sigma(value, sigma):
+    """Format as 'value ± σ' with σ rounded to 1 sig fig and value rounded
+    to match its decimal place."""
+    if not (math.isfinite(sigma) and sigma > 0):
+        return f"{value:+.4f}", "0"
+    exp = math.floor(math.log10(sigma))
+    decimals = max(0, -exp)
+    return f"{value:+.{decimals}f}", f"{sigma:.{decimals}f}"
 
 def _numerical_jac(fn, x, popt, eps_frac=1e-6):
     """∂f/∂p evaluated at popt, returns J of shape (len(x), len(popt))."""
@@ -249,9 +275,9 @@ for label, fn, p0, color in fit_specs:
         J = _numerical_jac(fn, Lplot, popt)
         var_y = np.einsum("ij,jk,ik->i", J, pcov, J)
         sigma_y = np.sqrt(np.clip(var_y, 0, None))
+        a_str, s_str = _fmt_value_sigma(popt[0], perr[0])
         ax2.plot(Lplot, ycurve, "-", color=color, linewidth=1.4, alpha=0.85,
-                 label=f"{label}  $a_\\infty={popt[0]:+.4f}\\pm{perr[0]:.4f}$  "
-                       f"$\\chi^2/{dof}={chi2_val:.2f}$  p={p_val:.2f}")
+                 label=f"{label}  $a_\\infty={a_str}\\pm{s_str}$")
         ax2.fill_between(Lplot, ycurve - sigma_y, ycurve + sigma_y,
                          color=color, alpha=0.15, linewidth=0)
         fit_summaries.append({
@@ -274,6 +300,58 @@ for s in fit_summaries:
     print(f"  {s['label']:22s}  {s['popt'][0]:+10.5f}  {s['perr'][0]:10.5f}  "
           f"{s['chi2']:6.2f}  {s['dof']:>3d}  {s['p']:5.2f}  "
           f"ΔAIC={s['aic']-aic_min:5.2f}  ΔBIC={s['bic']-bic_min:5.2f}")
+
+# ------------------------------------------------------------------------
+# Monte-Carlo refit with asymmetric (split-normal) per-point errors.
+# For each MC trial, sample each data point from its split-normal distribution
+# (σ_+ for upper, σ_- for lower), refit each model, collect a∞.
+# After N trials, report the median + 16/84 percentile envelope on a∞.
+# Fit weights inside each trial use the symmetric geometric mean σ.
+# ------------------------------------------------------------------------
+N_MC = 2000
+rng = np.random.default_rng(20260525)
+fit_d_arr  = np.array(diffs)
+fit_ep_arr = np.array(err_plus)
+fit_em_arr = np.array(err_minus)
+# Symmetric σ to use as curve_fit weights inside the MC loop
+fit_e_sym  = np.sqrt(fit_ep_arr * fit_em_arr)
+fit_e_sym  = np.maximum(fit_e_sym, SIGMA_FLOOR)
+
+def _split_normal_sample(mu, sigma_minus, sigma_plus, rng):
+    """One sample per element of mu (shape N)."""
+    p_plus = sigma_plus / (sigma_plus + sigma_minus)
+    u  = rng.random(len(mu))
+    an = np.abs(rng.standard_normal(len(mu)))
+    return np.where(u < p_plus,
+                    mu + an * sigma_plus,
+                    mu - an * sigma_minus)
+
+mc_results = {s["label"]: [] for s in fit_summaries}
+for trial in range(N_MC):
+    d_trial = _split_normal_sample(fit_d_arr, fit_em_arr, fit_ep_arr, rng)
+    for label, fn, p0, _color in fit_specs:
+        if label not in mc_results: continue
+        try:
+            popt_mc, _ = curve_fit(fn, fit_Ls, d_trial, sigma=fit_e_sym,
+                                   p0=p0, absolute_sigma=True, maxfev=10000)
+            mc_results[label].append(popt_mc[0])
+        except Exception:
+            pass
+
+print()
+print(f"Monte-Carlo refit ({N_MC} trials, asymmetric per-point errors):")
+print(f"  {'model':22s}  {'median':>10s}  {'+1σ':>10s}  {'-1σ':>10s}   n_ok")
+for s in fit_summaries:
+    label = s["label"]
+    samples = np.array(mc_results.get(label, []))
+    if len(samples) < 100:
+        print(f"  {label:22s}  too few good fits ({len(samples)})")
+        continue
+    median = float(np.median(samples))
+    lo, hi = np.percentile(samples, [16, 84])
+    sig_plus  = hi - median
+    sig_minus = median - lo
+    print(f"  {label:22s}  {median:+10.5f}  {sig_plus:+10.5f}  {sig_minus:+10.5f}   {len(samples):>4d}")
 
 # F-test for nested models: 1/L (k=2) ⊂ 1/L+1/L² (k=3).
 # Tests whether the extra parameter in the more-complex model is statistically

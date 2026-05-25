@@ -492,22 +492,38 @@ function compute_excited_states(sites, H, sweeps; k::Int=4,
                                 early_stop_tol::Float64=0.0,
                                 minsweeps::Int=20,
                                 chunk_sweeps::Int=10,
-                                warm_start_states::Union{Nothing,Vector{MPS}}=nothing)
+                                warm_start_states::Union{Nothing,Vector{MPS}}=nothing,
+                                skip_mask::Union{Nothing,Vector{Bool}}=nothing)
     energies = Float64[]
     states   = MPS[]
     use_warm = warm_start_states !== nothing
+    # skip_mask[k+1] == true means "use warm-start state without DMRG; just
+    # compute its energy via ⟨ψ|H|ψ⟩."  Requires warm_start_states.
+    if skip_mask !== nothing
+        @assert length(skip_mask) == k + 1 "skip_mask must have length k+1"
+        if any(skip_mask)
+            @assert use_warm "skip_mask requires warm_start_states"
+        end
+    end
 
     _t_start = time()
     psi0_init = use_warm ? warm_start_states[1] : randomMPS(sites, χ_init)
     _t_gs = time()
-    E0, psi0 = _dmrg_chunked(H, psi0_init, sweeps;
-                             weight=0.0, energy_tol=early_stop_tol,
-                             minsweeps=minsweeps, chunk_sweeps=chunk_sweeps)
+    skip0 = skip_mask !== nothing && skip_mask[1]
+    if skip0
+        psi0 = psi0_init
+        E0   = real(inner(psi0', H, psi0))
+    else
+        E0, psi0 = _dmrg_chunked(H, psi0_init, sweeps;
+                                 weight=0.0, energy_tol=early_stop_tol,
+                                 minsweeps=minsweeps, chunk_sweeps=chunk_sweeps)
+    end
     push!(energies, E0)
     push!(states,   psi0)
-    @printf("  [compute_excited] k=0/%d  E=%.5f  Δt=%.1fs  total=%.1fs%s\n",
+    @printf("  [compute_excited] k=0/%d  E=%.5f  Δt=%.1fs  total=%.1fs%s%s\n",
             k, E0, time()-_t_gs, time()-_t_start,
-            use_warm ? "  [warm]" : ""); flush(stdout)
+            use_warm ? "  [warm]" : "",
+            skip0 ? "  [skip]" : ""); flush(stdout)
 
     hs = higher_sweeps === nothing ? sweeps : higher_sweeps
 
@@ -515,17 +531,24 @@ function compute_excited_states(sites, H, sweeps; k::Int=4,
         _t_j = time()
         psi_init = (use_warm && j + 1 <= length(warm_start_states)) ?
                    warm_start_states[j + 1] : randomMPS(sites, χ_init)
-        Ej, psij = _dmrg_chunked(H, psi_init, hs;
-                                 prev_states=states,
-                                 weight=weight, energy_tol=early_stop_tol,
-                                 minsweeps=minsweeps, chunk_sweeps=chunk_sweeps)
+        skip_j = skip_mask !== nothing && skip_mask[j + 1]
+        if skip_j
+            psij = psi_init
+            Ej   = real(inner(psij', H, psij))
+        else
+            Ej, psij = _dmrg_chunked(H, psi_init, hs;
+                                     prev_states=states,
+                                     weight=weight, energy_tol=early_stop_tol,
+                                     minsweeps=minsweeps, chunk_sweeps=chunk_sweeps)
+        end
         push!(energies, Ej)
         push!(states,   psij)
         _elapsed = time() - _t_start
         _avg = _elapsed / (j + 1)
         _eta = max(0.0, _avg * (k - j))
-        @printf("  [compute_excited] k=%d/%d  E=%.5f  gap=%.5f  Δt=%.1fs  total=%.1fs  ETA=%.1fs\n",
-                j, k, Ej, Ej - energies[1], time()-_t_j, _elapsed, _eta)
+        @printf("  [compute_excited] k=%d/%d  E=%.5f  gap=%.5f  Δt=%.1fs  total=%.1fs  ETA=%.1fs%s\n",
+                j, k, Ej, Ej - energies[1], time()-_t_j, _elapsed, _eta,
+                skip_j ? "  [skip]" : "")
         flush(stdout)
     end
     return energies, states
@@ -1352,6 +1375,8 @@ function convergence_overlap_pzero(; N_list::Vector{Int}=[4, 6, 8, 10, 12],
                                     early_stop_tol::Float64=1e-7,
                                     warm_start_dir::Union{Nothing,AbstractString}=nothing,
                                     save_states_dir::Union{Nothing,AbstractString}=nothing,
+                                    refinement_gating::Bool=false,
+                                    gating_overlap_threshold::Float64=0.001,
                                     fname_suffix::String="")
     _ensure_data_dir()
     if seed > 0
@@ -1402,12 +1427,33 @@ function convergence_overlap_pzero(; N_list::Vector{Int}=[4, 6, 8, 10, 12],
         elseif warm_start_dir !== nothing
             @warn "  no warm-start file found in $warm_start_dir for L=$L $b $z2obc seed=$seed — falling back to random init"
         end
+        # Refinement gating: skip DMRG for states whose pass-1 meson overlap
+        # is below threshold.  Requires warm_states.
+        skip_mask = nothing
+        if refinement_gating
+            if warm_states === nothing
+                @warn "  refinement_gating=true but no warm states — falling back to full DMRG"
+            else
+                O_pass1, _n = build_O_pzero_mpo(sites, L, b)
+                P_pass1 = apply(O_pass1, warm_states[1])
+                overlaps_pass1 = Float64[abs2(inner(ψ, P_pass1)) for ψ in warm_states]
+                skip_mask = Bool[k == 0 ? false :
+                                  !(k+1 <= length(overlaps_pass1) &&
+                                    isfinite(overlaps_pass1[k+1]) &&
+                                    overlaps_pass1[k+1] >= gating_overlap_threshold)
+                                 for k in 0:K]
+                n_refine = K + 1 - sum(skip_mask)
+                @printf("  refinement_gating: refining %d/%d states (threshold=%.4g)\n",
+                        n_refine, K+1, gating_overlap_threshold)
+            end
+        end
         _t_dmrg = @elapsed try
             energies, states = compute_excited_states(sites, H, sweeps_gs;
                                                        k=K, weight=weight, χ_init=10,
                                                        higher_sweeps=sweeps_higher,
                                                        early_stop_tol=early_stop_tol,
-                                                       warm_start_states=warm_states)
+                                                       warm_start_states=warm_states,
+                                                       skip_mask=skip_mask)
         catch err
             @warn "DMRG failed at L=$L boundary=$b z2_obc=$z2obc_label: $err"
             continue

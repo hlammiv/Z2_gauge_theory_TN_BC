@@ -1300,11 +1300,22 @@ function solve_z2_higgs_k(H, sites; k_max::Int=4,
                           cutoff::Float64=1.0e-10,
                           warm_start::Bool=false,
                           warm_start_psis::Union{Nothing,Vector{MPS}}=nothing,
+                          nsweeps_per_state::Union{Nothing,Vector{Int}}=nothing,
                           early_stop_tol::Float64=0.0,
                           physical_gap_threshold::Float64=0.0,
                           max_attempts::Int=0)
     @assert k_max >= 0
     use_warm = warm_start_psis !== nothing
+    # If `nsweeps_per_state` is provided, each state k uses that many sweeps.
+    # An entry == 0 means "skip DMRG for this state; use the warm-start MPS
+    # verbatim and compute its energy via ⟨ψ|H|ψ⟩."  This requires a warm
+    # start (otherwise there's no MPS to use for the skipped state).
+    if nsweeps_per_state !== nothing
+        @assert length(nsweeps_per_state) == k_max + 1 "nsweeps_per_state must have length k_max+1"
+        if any(n -> n == 0, nsweeps_per_state)
+            @assert use_warm "nsweeps_per_state=0 requires warm_start_psis"
+        end
+    end
     # Ramp bond dim through the sweeps. With lambda_gauss=20 the spectrum near
     # E_0 is dense, so we give higher levels more bond and more sweeps.
     # The ramp ends at maxdim_final; any sweeps beyond stay at that value.
@@ -1326,12 +1337,20 @@ function solve_z2_higgs_k(H, sites; k_max::Int=4,
     _t_start = time()
     psi0_init = use_warm ? warm_start_psis[1] : random_mps(sites; linkdims=2)
     _t_gs = time()
-    e0, psi0 = _dmrg_maybe_early(H, MPS[], psi0_init; nsweeps, maxdim, cutoff,
-                                 noise, weight=0.0, early_stop_tol=early_stop_tol)
+    nsw_gs = nsweeps_per_state === nothing ? nsweeps : nsweeps_per_state[1]
+    if nsw_gs > 0
+        e0, psi0 = _dmrg_maybe_early(H, MPS[], psi0_init; nsweeps=nsw_gs,
+                                     maxdim, cutoff, noise, weight=0.0,
+                                     early_stop_tol=early_stop_tol)
+    else
+        psi0 = psi0_init
+        e0   = real(inner(psi0', H, psi0))
+    end
     push!(energies, e0)
     push!(psis, psi0)
-    Printf.@printf("  [solve_z2] k=0/%d  E=%.5f  Δt=%.1fs  total=%.1fs\n",
-                   k_max, e0, time()-_t_gs, time()-_t_start)
+    Printf.@printf("  [solve_z2] k=0/%d  E=%.5f  Δt=%.1fs  total=%.1fs%s\n",
+                   k_max, e0, time()-_t_gs, time()-_t_start,
+                   nsw_gs == 0 ? "  [skip]" : "")
     flush(stdout)
 
     # We keep ALL found states in `psis` for orthogonality, but track which
@@ -1364,9 +1383,16 @@ function solve_z2_higgs_k(H, sites; k_max::Int=4,
             random_mps(sites; linkdims=2)
         end
         _t_k = time()
-        ek, psik = _dmrg_maybe_early(H, psis, psi_init; nsweeps, maxdim,
-                                     cutoff, noise, weight=weight,
-                                     early_stop_tol=early_stop_tol)
+        nsw_k = nsweeps_per_state === nothing ? nsweeps :
+                nsweeps_per_state[attempt + 1]
+        if nsw_k > 0
+            ek, psik = _dmrg_maybe_early(H, psis, psi_init; nsweeps=nsw_k,
+                                         maxdim, cutoff, noise, weight=weight,
+                                         early_stop_tol=early_stop_tol)
+        else
+            psik = psi_init
+            ek   = real(inner(psik', H, psik))
+        end
         push!(energies, ek)
         push!(psis, psik)
         gap_k = ek - energies[1]
@@ -1376,9 +1402,10 @@ function solve_z2_higgs_k(H, sites; k_max::Int=4,
         _elapsed = time() - _t_start
         _avg_per_state = _elapsed / (attempt + 1)  # ground + attempt-many excited
         _eta = max(0.0, _avg_per_state * (k_max - attempt))
-        Printf.@printf("  [solve_z2] k=%d/%d  E=%.5f  gap=%.5f  Δt=%.1fs  total=%.1fs  ETA=%.1fs%s\n",
+        Printf.@printf("  [solve_z2] k=%d/%d  E=%.5f  gap=%.5f  Δt=%.1fs  total=%.1fs  ETA=%.1fs%s%s\n",
                        attempt, k_max, ek, gap_k, time()-_t_k, _elapsed, _eta,
-                       is_physical ? "" : "  [unphysical, skip]")
+                       is_physical ? "" : "  [unphysical, skip]",
+                       nsw_k == 0 ? "  [skip]" : "")
         flush(stdout)
     end
 
@@ -1977,6 +2004,8 @@ function convergence_overlap_pzero(; Larr=[4, 6, 8, 10, 12],
                                    warm_start::Bool=false,
                                    warm_start_dir::Union{Nothing,AbstractString}=nothing,
                                    save_states_dir::Union{Nothing,AbstractString}=nothing,
+                                   refinement_gating::Bool=false,
+                                   gating_overlap_threshold::Float64=0.001,
                                    early_stop_tol::Float64=1e-7,
                                    physical_gap_threshold::Float64=0.0,
                                    max_attempts::Int=0,
@@ -2026,12 +2055,41 @@ function convergence_overlap_pzero(; Larr=[4, 6, 8, 10, 12],
             elseif warm_start_dir !== nothing
                 @warn "  no warm-start file found in $warm_start_dir for L=$L $boundary $z2obc seed=$seed — falling back to random init"
             end
+            # Refinement gating: from the warm-start states, compute meson
+            # overlaps and skip DMRG refinement for states with overlap below
+            # the threshold. Requires warm_start states.
+            nsw_per_state = nothing
+            if refinement_gating
+                if warm_psis === nothing
+                    @warn "refinement_gating=true but no warm states loaded — falling back to full DMRG"
+                else
+                    dummy_E = zeros(length(warm_psis))
+                    (_, _, _, _, _, _, _, overlaps_pass1) =
+                        compute_overlap_meson_pzero(dummy_E, warm_psis, sites, L, boundary;
+                                                    overlap_threshold=overlap_threshold)
+                    # Always refine ground state; skip excited states whose
+                    # pass-1 overlap is below the gating threshold.
+                    n_refine = 1
+                    nsw_per_state = Int[nsweeps]  # ground always refined
+                    for k in 1:k_max
+                        if k+1 <= length(overlaps_pass1) &&
+                           isfinite(overlaps_pass1[k+1]) &&
+                           overlaps_pass1[k+1] >= gating_overlap_threshold
+                            push!(nsw_per_state, nsweeps); n_refine += 1
+                        else
+                            push!(nsw_per_state, 0)
+                        end
+                    end
+                    @info "  refinement_gating: refining $n_refine/$(k_max+1) states (threshold=$gating_overlap_threshold)"
+                end
+            end
             _t_dmrg = @elapsed (energies, psis) = solve_z2_higgs_k(H, sites; k_max=k_max,
                                               nsweeps=nsweeps, weight=weight,
                                               maxdim_final=maxdim_final,
                                               cutoff=dmrg_cutoff,
                                               warm_start=warm_start,
                                               warm_start_psis=warm_psis,
+                                              nsweeps_per_state=nsw_per_state,
                                               early_stop_tol=early_stop_tol,
                                               physical_gap_threshold=physical_gap_threshold,
                                               max_attempts=max_attempts)
