@@ -491,26 +491,30 @@ function compute_excited_states(sites, H, sweeps; k::Int=4,
                                 higher_sweeps=nothing,
                                 early_stop_tol::Float64=0.0,
                                 minsweeps::Int=20,
-                                chunk_sweeps::Int=10)
+                                chunk_sweeps::Int=10,
+                                warm_start_states::Union{Nothing,Vector{MPS}}=nothing)
     energies = Float64[]
     states   = MPS[]
+    use_warm = warm_start_states !== nothing
 
     _t_start = time()
-    psi0_init = randomMPS(sites, χ_init)
+    psi0_init = use_warm ? warm_start_states[1] : randomMPS(sites, χ_init)
     _t_gs = time()
     E0, psi0 = _dmrg_chunked(H, psi0_init, sweeps;
                              weight=0.0, energy_tol=early_stop_tol,
                              minsweeps=minsweeps, chunk_sweeps=chunk_sweeps)
     push!(energies, E0)
     push!(states,   psi0)
-    @printf("  [compute_excited] k=0/%d  E=%.5f  Δt=%.1fs  total=%.1fs\n",
-            k, E0, time()-_t_gs, time()-_t_start); flush(stdout)
+    @printf("  [compute_excited] k=0/%d  E=%.5f  Δt=%.1fs  total=%.1fs%s\n",
+            k, E0, time()-_t_gs, time()-_t_start,
+            use_warm ? "  [warm]" : ""); flush(stdout)
 
     hs = higher_sweeps === nothing ? sweeps : higher_sweeps
 
     for j in 1:k
         _t_j = time()
-        psi_init = randomMPS(sites, χ_init)
+        psi_init = (use_warm && j + 1 <= length(warm_start_states)) ?
+                   warm_start_states[j + 1] : randomMPS(sites, χ_init)
         Ej, psij = _dmrg_chunked(H, psi_init, hs;
                                  prev_states=states,
                                  weight=weight, energy_tol=early_stop_tol,
@@ -1298,6 +1302,39 @@ end
 # Also report the argmax over k>0 for comparison.
 ###############################################################################
 
+# MPS save/load helpers for warm-start.
+function _claude_states_filename(states_dir::AbstractString, L::Int, b::Symbol,
+                                  z2obc::Symbol, seed::Int)
+    return joinpath(states_dir,
+        "states_L$(L)_$(string(b))_$(string(z2obc))_seed$(seed).h5")
+end
+function _claude_save_states(states_dir, L, b, z2obc, seed, states, energies)
+    mkpath(states_dir)
+    fname = _claude_states_filename(states_dir, L, b, z2obc, seed)
+    h5open(fname, "w") do f
+        write(f, "n_states", length(states))
+        write(f, "energies", energies)
+        for (k, ψ) in enumerate(states)
+            write(f, "psi_k$(k-1)", ψ)
+        end
+    end
+    return fname
+end
+function _claude_load_warm_states(states_dir, L, b, z2obc, seed; sites=nothing)
+    fname = _claude_states_filename(states_dir, L, b, z2obc, seed)
+    isfile(fname) || return nothing
+    states = h5open(fname, "r") do f
+        n = read(f, "n_states")
+        return MPS[read(f, "psi_k$(k-1)", MPS) for k in 1:n]
+    end
+    if sites !== nothing
+        for ψ in states
+            replace_siteinds!(ψ, sites)
+        end
+    end
+    return states
+end
+
 function convergence_overlap_pzero(; N_list::Vector{Int}=[4, 6, 8, 10, 12],
                                     K::Int=12,
                                     m::Float64=1.125, η::Float64=1.0,
@@ -1313,6 +1350,8 @@ function convergence_overlap_pzero(; N_list::Vector{Int}=[4, 6, 8, 10, 12],
                                     bg_right::Int=+1,
                                     seed::Int=0,
                                     early_stop_tol::Float64=1e-7,
+                                    warm_start_dir::Union{Nothing,AbstractString}=nothing,
+                                    save_states_dir::Union{Nothing,AbstractString}=nothing,
                                     fname_suffix::String="")
     _ensure_data_dir()
     if seed > 0
@@ -1355,14 +1394,26 @@ function convergence_overlap_pzero(; N_list::Vector{Int}=[4, 6, 8, 10, 12],
         end
 
         local energies, states
+        warm_states = warm_start_dir === nothing ? nothing :
+            _claude_load_warm_states(warm_start_dir, L, b, z2obc, seed; sites=sites)
+        if warm_states !== nothing
+            @printf("  using %d warm-start states from %s\n",
+                    length(warm_states), warm_start_dir)
+        elseif warm_start_dir !== nothing
+            @warn "  no warm-start file found in $warm_start_dir for L=$L $b $z2obc seed=$seed — falling back to random init"
+        end
         _t_dmrg = @elapsed try
             energies, states = compute_excited_states(sites, H, sweeps_gs;
                                                        k=K, weight=weight, χ_init=10,
                                                        higher_sweeps=sweeps_higher,
-                                                       early_stop_tol=early_stop_tol)
+                                                       early_stop_tol=early_stop_tol,
+                                                       warm_start_states=warm_states)
         catch err
             @warn "DMRG failed at L=$L boundary=$b z2_obc=$z2obc_label: $err"
             continue
+        end
+        if save_states_dir !== nothing
+            _claude_save_states(save_states_dir, L, b, z2obc, seed, states, energies)
         end
 
         # Per-state energy variance σ_k = √(⟨ψ_k|H²|ψ_k⟩ − E_k²).

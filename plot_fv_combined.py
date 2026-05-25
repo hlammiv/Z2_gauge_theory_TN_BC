@@ -4,10 +4,26 @@ import csv, math
 from pathlib import Path
 import numpy as np
 from scipy.optimize import curve_fit
-from scipy.stats import chi2 as chi2_dist
+from scipy.stats import chi2 as chi2_dist, f as f_dist
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+# Empirical convergence drift per (L, boundary), measured from the most recent
+# nsweeps doubling we have.  DMRG variational bias is one-sided (energies and
+# gaps drift UP with more nsweeps), so we treat this as a *one-sided* systematic:
+#   σ_+ on ̄M = drift size  (̄M could be this much higher with full convergence)
+#   σ_- on ̄M = 0           (we never observe downward drift)
+# Other systematics (k_max, maxdim) are smaller and lumped into a small floor.
+SYS_FLOOR = 0.003  # quadrature floor: maxdim + k_max systematics
+EMPIRICAL_DRIFT_UP = {
+    # L → {boundary → drift size}
+    8:  {"OBC": 0.0003, "PBC": 0.0044},
+    10: {"OBC": 0.0016, "PBC": 0.0009},
+    12: {"OBC": 0.0026, "PBC": 0.0009},
+    14: {"OBC": 0.0027, "PBC": 0.0015},
+    16: {"OBC": 0.0051, "PBC": 0.0063},
+}
 
 DATA = Path("/home/hlamm/Desktop/QC/circuit_knitting/data")
 
@@ -22,10 +38,10 @@ LEN = {
     "z2-gauge":  DATA/"lenore_prod_final/z2_gauge_theory",
     "z2-claude": DATA/"lenore_prod_final/z2_claude",
 }
-# L=16 from 4 seeds on lenore at nsweeps=320 (best convergence)
+# L=16 from 4 seeds on lenore at nsweeps=640 (most converged)
 LEN16 = {
-    "z2-gauge":  DATA/"L16_nsw320/z2_gauge_theory",
-    "z2-claude": DATA/"L16_nsw320/z2_claude",
+    "z2-gauge":  DATA/"L16_nsw640/z2_gauge_theory",
+    "z2-claude": DATA/"L16_nsw640/z2_claude",
 }
 # L=8 from 4 seeds (2 local + 2 lenore) at nsweeps=160
 LEN8 = {
@@ -131,7 +147,7 @@ ax.errorbar(shift(L_c_pbc, +0.08), g_c_pbc, yerr=s_c_pbc, fmt="s--", color="tab:
             capsize=4, markersize=7, mfc="none", label="PBC z2-claude")
 ax.set_ylabel(r"$\bar M = \bar{\rm gap}$  (spectral 1st moment, $O_{p=0}$)", fontsize=12)
 ax.set_title(r"FV at $(m_0=0.1,\ \eta=0.5,\ \alpha=1,\ bg=(-1,-1))$" + "\n"
-             r"$k_{max}=30$, maxdim=400, nsweeps=320 ($L=10,12,14,16$) / 160 ($L=8$); 4 seeds at $L \geq 8$",
+             r"$k_{max}=30$, maxdim=300, nsweeps=640 ($L=16$) / 320 ($L=10,12,14$) / 160 ($L=8$); 4 seeds at $L \geq 8$",
              fontsize=11)
 ax.legend(loc="center right", fontsize=10, ncol=2)
 ax.grid(True, alpha=0.3)
@@ -143,7 +159,26 @@ for L in sorted({k[0] for k in combined}):
         o, so = combined[(L, "open_site")]; p, sp = combined[(L, "PBC")]
         Ls_diff.append(L); diffs.append(o-p); errs.append(math.sqrt(so**2 + sp**2))
 
-ax2.errorbar(Ls_diff, diffs, yerr=errs, fmt="d-", color="black", capsize=4, markersize=7)
+# Asymmetric error bars on (OBC − PBC), propagated from per-boundary drifts:
+#   σ_+ (toward zero, less negative): driven by σ_+(OBC) — if OBC could shift UP
+#   σ_- (more negative):              driven by σ_+(PBC) — if PBC could shift UP
+# stat σ on the difference is added in quadrature.  SYS_FLOOR (per boundary)
+# captures residual maxdim/k_max systematics not measured directly.
+err_plus  = []   # toward zero
+err_minus = []   # more negative
+for L, _d, e_stat in zip(Ls_diff, diffs, errs):
+    drift = EMPIRICAL_DRIFT_UP.get(L, {"OBC": 0.0, "PBC": 0.0})
+    sigp_OBC = math.sqrt(drift["OBC"]**2 + SYS_FLOOR**2)
+    sigp_PBC = math.sqrt(drift["PBC"]**2 + SYS_FLOOR**2)
+    err_plus.append(math.sqrt(e_stat**2 + sigp_OBC**2))
+    err_minus.append(math.sqrt(e_stat**2 + sigp_PBC**2))
+yerr_asym = [err_minus, err_plus]   # matplotlib wants [lower, upper]
+
+ax2.errorbar(Ls_diff, diffs, yerr=yerr_asym, fmt="none", color="gray",
+             capsize=6, alpha=0.5, linewidth=1.5,
+             label="stat ⊕ asym sys (per-bdy drift)")
+ax2.errorbar(Ls_diff, diffs, yerr=errs, fmt="d-", color="black", capsize=4,
+             markersize=7, label="stat. only")
 ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
 ax2.set_xlabel("L  (matter sites)", fontsize=12)
 ax2.set_ylabel("OBC − PBC", fontsize=12)
@@ -155,7 +190,13 @@ ax2.grid(True, alpha=0.3)
 # with a sane weight.  Same floor applied uniformly (only affects L=4 since
 # L=6 already has σ ~ 4e-3).
 SIGMA_FLOOR = 1e-3
-_arr = [(L, d, max(e, SIGMA_FLOOR)) for (L, d, e) in zip(Ls_diff, diffs, errs)]
+# For curve_fit, use the LARGER side of the asymmetric error as a conservative
+# symmetric σ.  This keeps the fit machinery simple and is honest for points
+# where the two sides differ.
+_arr = []
+for L, d, e_stat, ep, em in zip(Ls_diff, diffs, errs, err_plus, err_minus):
+    e_use = max(max(ep, em), SIGMA_FLOOR)
+    _arr.append((L, d, e_use))
 fit_Ls   = np.array([t[0] for t in _arr], dtype=float)
 fit_d    = np.array([t[1] for t in _arr])
 fit_e    = np.array([t[2] for t in _arr])
@@ -233,9 +274,30 @@ for s in fit_summaries:
     print(f"  {s['label']:22s}  {s['popt'][0]:+10.5f}  {s['perr'][0]:10.5f}  "
           f"{s['chi2']:6.2f}  {s['dof']:>3d}  {s['p']:5.2f}  "
           f"ΔAIC={s['aic']-aic_min:5.2f}  ΔBIC={s['bic']-bic_min:5.2f}")
-# Annotate sigma values
-for L, d, e in zip(Ls_diff, diffs, errs):
-    sig = abs(d) / e
+
+# F-test for nested models: 1/L (k=2) ⊂ 1/L+1/L² (k=3).
+# Tests whether the extra parameter in the more-complex model is statistically
+# warranted given the reduction in χ².
+_by_label = {s["label"]: s for s in fit_summaries}
+sA = _by_label.get("$a + b/L$")
+sB = _by_label.get("$a + b/L + c/L^2$")
+if sA is not None and sB is not None:
+    dchi2 = sA["chi2"] - sB["chi2"]
+    dpar  = sB["npar"] - sA["npar"]
+    dof_B = sB["dof"]
+    if dpar > 0 and dof_B > 0 and dchi2 > 0:
+        F = (dchi2 / dpar) / (sB["chi2"] / dof_B)
+        p_F = float(f_dist.sf(F, dpar, dof_B))
+        verdict = "extra parameter NOT warranted" if p_F > 0.05 else "extra parameter warranted"
+        print(f"\nF-test (nested): 1/L  vs  1/L + 1/L²")
+        print(f"  Δχ²={dchi2:.3f}, Δk={dpar}, F={F:.3f}, p_F={p_F:.3f}  → {verdict}")
+    else:
+        print(f"\nF-test skipped (Δχ²={dchi2:.3f}, Δk={dpar})")
+
+# Annotate sigma values (use the asymmetric σ in the direction of zero,
+# i.e. how many σ_+ away from zero is the data point).
+for L, d, ep in zip(Ls_diff, diffs, err_plus):
+    sig = abs(d) / ep
     ax2.annotate(f"{sig:.1f}σ", (L, d), textcoords="offset points", xytext=(8, -10),
                  fontsize=9, color="dimgray")
 

@@ -1299,23 +1299,32 @@ function solve_z2_higgs_k(H, sites; k_max::Int=4,
                           maxdim_final::Int=800,
                           cutoff::Float64=1.0e-10,
                           warm_start::Bool=false,
+                          warm_start_psis::Union{Nothing,Vector{MPS}}=nothing,
                           early_stop_tol::Float64=0.0,
                           physical_gap_threshold::Float64=0.0,
                           max_attempts::Int=0)
     @assert k_max >= 0
+    use_warm = warm_start_psis !== nothing
     # Ramp bond dim through the sweeps. With lambda_gauss=20 the spectrum near
     # E_0 is dense, so we give higher levels more bond and more sweeps.
     # The ramp ends at maxdim_final; any sweeps beyond stay at that value.
-    maxdim = [10, 20, 40, 80, 100, 200, 300, 400, 600, min(800, maxdim_final),
-              min(1000, maxdim_final), min(1200, maxdim_final),
-              min(1600, maxdim_final), min(2000, maxdim_final)]
-    noise  = [1e-7, 1e-8, 1e-9, 0.0]
+    # In warm-start mode the init MPS is already at the target bond dim, so
+    # we drop the ramp and the noise schedule.
+    if use_warm
+        maxdim = [maxdim_final]
+        noise  = [0.0]
+    else
+        maxdim = [10, 20, 40, 80, 100, 200, 300, 400, 600, min(800, maxdim_final),
+                  min(1000, maxdim_final), min(1200, maxdim_final),
+                  min(1600, maxdim_final), min(2000, maxdim_final)]
+        noise  = [1e-7, 1e-8, 1e-9, 0.0]
+    end
 
     energies = Float64[]
     psis = MPS[]
 
     _t_start = time()
-    psi0_init = random_mps(sites; linkdims=2)
+    psi0_init = use_warm ? warm_start_psis[1] : random_mps(sites; linkdims=2)
     _t_gs = time()
     e0, psi0 = _dmrg_maybe_early(H, MPS[], psi0_init; nsweeps, maxdim, cutoff,
                                  noise, weight=0.0, early_stop_tol=early_stop_tol)
@@ -1338,8 +1347,11 @@ function solve_z2_higgs_k(H, sites; k_max::Int=4,
     while (skip_enabled ? sum(physical_mask) < target_physical : attempt < k_max) &&
           attempt < bound
         attempt += 1
-        # Initial guess: random by default; warm-start uses H·ψ_{k-1}.
-        psi_init = if warm_start
+        # Initial guess: warm-start from saved psi if provided, else random.
+        # The legacy `warm_start::Bool` (H·ψ_{k-1}) is also supported.
+        psi_init = if use_warm && attempt + 1 <= length(warm_start_psis)
+            warm_start_psis[attempt + 1]
+        elseif warm_start
             try
                 w = apply(H, psis[end];
                           maxdim=max(div(maxdim_final, 2), 100), cutoff=1e-8)
@@ -1892,6 +1904,61 @@ function compute_overlap_meson_pzero(energies, psis, sites, L::Int, boundary::Sy
             Pnorm, overlaps)
 end
 
+"""
+    _states_filename(states_dir, L, boundary, z2obc, seed) -> path
+
+Filename for the saved-MPS HDF5 archive for one (L, boundary, z2obc, seed).
+"""
+function _states_filename(states_dir::AbstractString, L::Int, boundary::Symbol,
+                          z2obc::Symbol, seed::Int)
+    return joinpath(states_dir,
+        "states_L$(L)_$(string(boundary))_$(string(z2obc))_seed$(seed).h5")
+end
+
+"""
+    _save_states(states_dir, L, boundary, z2obc, seed, psis, energies)
+
+Write the full list of converged MPSes + their energies to an HDF5 archive.
+"""
+function _save_states(states_dir::AbstractString, L::Int, boundary::Symbol,
+                      z2obc::Symbol, seed::Int,
+                      psis::Vector{MPS}, energies::Vector{Float64})
+    mkpath(states_dir)
+    fname = _states_filename(states_dir, L, boundary, z2obc, seed)
+    h5open(fname, "w") do f
+        write(f, "n_states", length(psis))
+        write(f, "energies", energies)
+        for (k, ψ) in enumerate(psis)
+            write(f, "psi_k$(k-1)", ψ)
+        end
+    end
+    return fname
+end
+
+"""
+    _load_warm_states(states_dir, L, boundary, z2obc, seed; sites) -> Vector{MPS} or nothing
+
+When `sites` is supplied, replace the loaded MPS's site indices with the
+freshly-built `sites` so it matches the current MPO (HDF5 round-trips give
+the MPS fresh Index IDs that won't match the rebuilt Hamiltonian).
+"""
+function _load_warm_states(states_dir::AbstractString, L::Int, boundary::Symbol,
+                           z2obc::Symbol, seed::Int;
+                           sites::Union{Nothing,Vector}=nothing)
+    fname = _states_filename(states_dir, L, boundary, z2obc, seed)
+    isfile(fname) || return nothing
+    psis = h5open(fname, "r") do f
+        n = read(f, "n_states")
+        return MPS[read(f, "psi_k$(k-1)", MPS) for k in 1:n]
+    end
+    if sites !== nothing
+        for ψ in psis
+            replace_siteinds!(ψ, sites)
+        end
+    end
+    return psis
+end
+
 function convergence_overlap_pzero(; Larr=[4, 6, 8, 10, 12],
                                    k_max::Int=12,
                                    boundaries=(:open_site, :PBC),
@@ -1908,6 +1975,8 @@ function convergence_overlap_pzero(; Larr=[4, 6, 8, 10, 12],
                                    alpha::Float64=1.0,
                                    seed::Int=0,
                                    warm_start::Bool=false,
+                                   warm_start_dir::Union{Nothing,AbstractString}=nothing,
+                                   save_states_dir::Union{Nothing,AbstractString}=nothing,
                                    early_stop_tol::Float64=1e-7,
                                    physical_gap_threshold::Float64=0.0,
                                    max_attempts::Int=0,
@@ -1947,14 +2016,29 @@ function convergence_overlap_pzero(; Larr=[4, 6, 8, 10, 12],
             _t_h = @elapsed (H, sites) = build_H(p; boundary=boundary, gauge_law=:z2,
                                z2_obc_boundary=z2obc,
                                bg_left=bg_left, bg_right=bg_right)
+            # Optional warm-start: load previously saved converged MPSes.
+            # Pass `sites=sites` so the loaded MPS gets the fresh-built site
+            # indices (HDF5 round-trips create new Index IDs).
+            warm_psis = warm_start_dir === nothing ? nothing :
+                _load_warm_states(warm_start_dir, L, boundary, z2obc, seed; sites=sites)
+            if warm_psis !== nothing
+                @info "  using $(length(warm_psis)) warm-start states from $warm_start_dir"
+            elseif warm_start_dir !== nothing
+                @warn "  no warm-start file found in $warm_start_dir for L=$L $boundary $z2obc seed=$seed — falling back to random init"
+            end
             _t_dmrg = @elapsed (energies, psis) = solve_z2_higgs_k(H, sites; k_max=k_max,
                                               nsweeps=nsweeps, weight=weight,
                                               maxdim_final=maxdim_final,
                                               cutoff=dmrg_cutoff,
                                               warm_start=warm_start,
+                                              warm_start_psis=warm_psis,
                                               early_stop_tol=early_stop_tol,
                                               physical_gap_threshold=physical_gap_threshold,
                                               max_attempts=max_attempts)
+            # Optional: persist converged MPSes for future warm-starts.
+            if save_states_dir !== nothing
+                _save_states(save_states_dir, L, boundary, z2obc, seed, psis, energies)
+            end
             _t_ov = @elapsed (km, gm, om, ka, ga, oa, pn, overlaps) =
                 compute_overlap_meson_pzero(energies, psis, sites, L, boundary;
                                             overlap_threshold=overlap_threshold)
