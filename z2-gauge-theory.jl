@@ -2037,7 +2037,10 @@ function convergence_overlap_pzero(; Larr=[4, 6, 8, 10, 12],
 
     for L in Larr, boundary in boundaries, z2obc in z2_obc_boundaries
         if boundary == :PBC && z2obc != :drop
-            continue
+            continue   # geometrically meaningless: no edge for the penalty
+        end
+        if boundary == :open_site && z2obc == :drop
+            continue   # legacy "config 1" not used by FV analysis; skip to save time
         end
         p = Data.Params(; m0=m0, eta=eta, alpha=alpha, Lphys=L, L=L)
         @info "overlap_pzero: L=$L, boundary=$boundary, z2obc=$z2obc, m0=$m0, eta=$eta"

@@ -1388,8 +1388,12 @@ function convergence_overlap_pzero(; N_list::Vector{Int}=[4, 6, 8, 10, 12],
     @printf("[overlap_pzero] nsweeps_gs=%d, nsweeps_ex=%d, maxdim_gs=%d, maxdim_ex=%d, cutoff=%.0e, weight=%.1f\n",
             nsweeps_gs, nsweeps_ex, maxdim_gs, maxdim_ex, cutoff, weight)
 
+    # Only the 2 configs used by the FV analysis:
+    #   (:open_site, :truncate_xz) — labelled "OBC" in plots
+    #   (:PBC,       :drop)        — labelled "PBC" in plots
+    # The legacy (:open_site, :drop) "config 1" is never read and was costing
+    # ~30-40% of total wall.  (:PBC, :truncate_xz) is geometrically meaningless.
     cases = [
-        (:open_site, :drop),
         (:open_site, :truncate_xz),
         (:PBC,       :drop),
     ]
