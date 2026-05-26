@@ -372,6 +372,41 @@ if sA is not None and sB is not None:
     else:
         print(f"\nF-test skipped (Δχ²={dchi2:.3f}, Δk={dpar})")
 
+# ------------------------------------------------------------------------
+# Robustness: refit each model with L_min = 4, 6, 8.  At small L the 1/L
+# expansion may not yet apply (subleading L^-3, L^-4 corrections that the
+# 2- or 3-parameter ansatz can't capture), so excluding them tests how much
+# the asymptote depends on the small-L regime.
+# Uses the SAME per-point errors as the main fit (asymmetric envelope,
+# symmetrized for curve_fit via max(σ_+, σ_-) with the L-dependent floor).
+# ------------------------------------------------------------------------
+print()
+print("Robustness: a∞ vs L_min cut (asymmetric-σ symmetrized weights)")
+header = f"  {'model':22s}"
+for Lmin in (4, 6, 8):
+    header += f"   L≥{Lmin}: {'a∞':>9s} {'±σ':>7s} {'p':>4s}"
+print(header)
+for label, fn, p0, _color in fit_specs:
+    row = f"  {label:22s}"
+    for Lmin in (4, 6, 8):
+        mask = np.array([L >= Lmin for L in Ls_diff])
+        if mask.sum() < len(p0) + 1:
+            row += f"   L≥{Lmin}: {'  N/A':>9} {'':>7} {'':>4}"
+            continue
+        try:
+            popt_r, pcov_r = curve_fit(fn, fit_Ls[mask], fit_d[mask],
+                                       sigma=fit_e[mask], p0=p0,
+                                       absolute_sigma=True, maxfev=20000)
+            perr_r = np.sqrt(np.diag(pcov_r))
+            resid_r = (fit_d[mask] - fn(fit_Ls[mask], *popt_r)) / fit_e[mask]
+            chi2_r = float((resid_r**2).sum())
+            dof_r = max(1, int(mask.sum()) - len(popt_r))
+            p_r = float(chi2_dist.sf(chi2_r, dof_r))
+            row += f"   L≥{Lmin}: {popt_r[0]:+9.4f} ±{perr_r[0]:.4f} {p_r:>4.2f}"
+        except Exception:
+            row += f"   L≥{Lmin}: {'  FIT FAIL':>9} {'':>7} {'':>4}"
+    print(row)
+
 # Annotate sigma values (use the asymmetric σ in the direction of zero,
 # i.e. how many σ_+ away from zero is the data point).
 for L, d, ep in zip(Ls_diff, diffs, err_plus):
