@@ -31,8 +31,8 @@ EMPIRICAL_DRIFT_UP = {
     #   L=16: nsw=320 → 640
     8:  {"OBC": 0.00002, "PBC": 0.00076},  # nsw=160→640
     10: {"OBC": 0.00052, "PBC": 0.00142},  # nsw=320→640
-    12: {"OBC": 0.0026,  "PBC": 0.0009},   # nsw=160→320 (gauge nsw=640 done, claude still running)
-    14: {"OBC": 0.0027,  "PBC": 0.0015},   # nsw=160→320 (nsw=640 running)
+    12: {"OBC": 0.00125, "PBC": 0.00367},  # nsw=320→640
+    14: {"OBC": 0.00151, "PBC": 0.00220},  # nsw=320→640
     16: {"OBC": 0.0051,  "PBC": 0.0063},   # nsw=320→640
 }
 
@@ -74,10 +74,10 @@ LEN12 = {
     "z2-gauge":  DATA/"L12_nsw640/z2_gauge_theory",
     "z2-claude": DATA/"L12_nsw640/z2_claude",
 }
-# L=14: gauge nsw=640 (done), claude nsw=320 (still running nsw=640)
+# L=14: 4 seeds × 2 codes at nsweeps=640 (fully done)
 LEN14 = {
     "z2-gauge":  DATA/"L14_nsw640/z2_gauge_theory",
-    "z2-claude": DATA/"L14_nsw320/z2_claude",
+    "z2-claude": DATA/"L14_nsw640/z2_claude",
 }
 
 def load_prod(path, L_list=(4,)):
@@ -164,7 +164,7 @@ ax.errorbar(shift(L_c_pbc, +0.08), g_c_pbc, yerr=s_c_pbc, fmt="s--", color="tab:
             capsize=4, markersize=7, mfc="none", label="PBC z2-claude")
 ax.set_ylabel(r"$\bar M = \bar{\rm gap}$  (spectral 1st moment, $O_{p=0}$)", fontsize=12)
 ax.set_title(r"FV at $(m_0=0.1,\ \eta=0.5,\ \alpha=1,\ bg=(-1,-1))$" + "\n"
-             r"$k_{max}=30$, maxdim=300, nsweeps=640 ($L=8,10,16$) / 320 ($L=12,14$); 4 seeds at $L \geq 8$",
+             r"$k_{max}=30$, maxdim=300, nsweeps=640 ($L=6$–$16$); 4 seeds at $L \geq 8$",
              fontsize=11)
 ax.legend(loc="center right", fontsize=10, ncol=2)
 ax.grid(True, alpha=0.3)
