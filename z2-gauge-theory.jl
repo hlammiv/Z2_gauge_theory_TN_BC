@@ -1277,13 +1277,19 @@ function _dmrg_maybe_early(H, prev_psis, psi_init;
     psi = psi_init
     E   = Inf
     swept = 0
+    # Apply full ramp + noise schedule on first chunk only; subsequent chunks
+    # use steady-state maxdim=[maxdim_final] and noise=[0.0] so the ramp
+    # isn't re-applied 64× over nsweeps=640 (which would inflate χ in every
+    # chunk's high-noise sweeps and balloon DMRG cost by ~10× at L=10 PBC).
+    md = maxdim; ns = noise
     while swept < nsweeps
         nsw_this = min(chunk_sweeps, nsweeps - swept)
         E_new, psi = weight > 0 ?
             dmrg(H, prev_psis, psi;
-                 nsweeps=nsw_this, maxdim, cutoff, noise, weight, outputlevel=0) :
-            dmrg(H, psi; nsweeps=nsw_this, maxdim, cutoff, noise, outputlevel=0)
+                 nsweeps=nsw_this, maxdim=md, cutoff, noise=ns, weight, outputlevel=0) :
+            dmrg(H, psi; nsweeps=nsw_this, maxdim=md, cutoff, noise=ns, outputlevel=0)
         swept += nsw_this
+        md = [last(maxdim)]; ns = [0.0]
         dE = abs(E_new - E)
         E = E_new
         if swept >= minsweeps && isfinite(dE) && dE < early_stop_tol
@@ -1303,7 +1309,9 @@ function solve_z2_higgs_k(H, sites; k_max::Int=4,
                           nsweeps_per_state::Union{Nothing,Vector{Int}}=nothing,
                           early_stop_tol::Float64=0.0,
                           physical_gap_threshold::Float64=0.0,
-                          max_attempts::Int=0)
+                          max_attempts::Int=0,
+                          cold_noise::Vector{Float64}=[1e-7, 1e-8, 1e-9, 0.0],
+                          cold_linkdims::Int=2)
     @assert k_max >= 0
     use_warm = warm_start_psis !== nothing
     # If `nsweeps_per_state` is provided, each state k uses that many sweeps.
@@ -1328,14 +1336,14 @@ function solve_z2_higgs_k(H, sites; k_max::Int=4,
         maxdim = [10, 20, 40, 80, 100, 200, 300, 400, 600, min(800, maxdim_final),
                   min(1000, maxdim_final), min(1200, maxdim_final),
                   min(1600, maxdim_final), min(2000, maxdim_final)]
-        noise  = [1e-7, 1e-8, 1e-9, 0.0]
+        noise  = cold_noise
     end
 
     energies = Float64[]
     psis = MPS[]
 
     _t_start = time()
-    psi0_init = use_warm ? warm_start_psis[1] : random_mps(sites; linkdims=2)
+    psi0_init = use_warm ? warm_start_psis[1] : random_mps(sites; linkdims=cold_linkdims)
     _t_gs = time()
     nsw_gs = nsweeps_per_state === nothing ? nsweeps : nsweeps_per_state[1]
     if nsw_gs > 0
@@ -1377,10 +1385,10 @@ function solve_z2_higgs_k(H, sites; k_max::Int=4,
                 normalize!(w)
                 w
             catch
-                random_mps(sites; linkdims=2)
+                random_mps(sites; linkdims=cold_linkdims)
             end
         else
-            random_mps(sites; linkdims=2)
+            random_mps(sites; linkdims=cold_linkdims)
         end
         _t_k = time()
         nsw_k = nsweeps_per_state === nothing ? nsweeps :
@@ -2010,6 +2018,8 @@ function convergence_overlap_pzero(; Larr=[4, 6, 8, 10, 12],
                                    physical_gap_threshold::Float64=0.0,
                                    max_attempts::Int=0,
                                    fname_suffix::String="",
+                                   cold_noise::Vector{Float64}=[1e-7, 1e-8, 1e-9, 0.0],
+                                   cold_linkdims::Int=2,
                                    outdir=joinpath(@__DIR__, "data", "z2_gauge_theory"))
     mkpath(outdir)
     if seed > 0
@@ -2095,7 +2105,9 @@ function convergence_overlap_pzero(; Larr=[4, 6, 8, 10, 12],
                                               nsweeps_per_state=nsw_per_state,
                                               early_stop_tol=early_stop_tol,
                                               physical_gap_threshold=physical_gap_threshold,
-                                              max_attempts=max_attempts)
+                                              max_attempts=max_attempts,
+                                              cold_noise=cold_noise,
+                                              cold_linkdims=cold_linkdims)
             # Optional: persist converged MPSes for future warm-starts.
             if save_states_dir !== nothing
                 _save_states(save_states_dir, L, boundary, z2obc, seed, psis, energies)
