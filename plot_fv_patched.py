@@ -185,6 +185,44 @@ for code in PROD:
         for k, v in new_l18pbc.items():
             data[code][k] = v
 
+# ---------- PATCHED OVERRIDE (L=4..14, z2-gauge only) ----------
+PATCH_DIR = DATA/"z2_gauge_theory"
+def load_patched(L, bdy):
+    if L in (14, 16, 18) and bdy == "PBC":
+        # Prefer warm640 (cold nsw=320 + 320 warm-start sweeps) if available
+        warm = sorted(PATCH_DIR.glob(f"convergence_overlap_pzero_L{L}_PBC_patched_warm640_seed*.csv"))
+        if warm:
+            files = warm
+        else:
+            files = sorted(PATCH_DIR.glob(f"convergence_overlap_pzero_L{L}_PBC_patched_nsw320_seed*.csv"))
+    else:
+        files = sorted(PATCH_DIR.glob(f"convergence_overlap_pzero_L{L}_{bdy}_patched_seed*.csv"))
+    vals = []
+    for f in files:
+        for r in csv.DictReader(f.open()):
+            if bdy == "PBC" and r["boundary"] == "PBC":
+                vals.append((float(r["barE_gap"]), float(r["sigma_barE"])))
+            elif bdy == "open_site" and r["boundary"] == "open_site" and r["z2_obc_boundary"] == "truncate_xz":
+                vals.append((float(r["barE_gap"]), float(r["sigma_barE"])))
+    if not vals: return None
+    gs = [v[0] for v in vals]; ss = [v[1] for v in vals]
+    n = len(gs); m = sum(gs)/n
+    seed_std = math.sqrt(sum((x-m)**2 for x in gs)/(n-1)) if n>1 else 0
+    sem = seed_std/math.sqrt(n)
+    sper_mean = sum(ss)/n
+    comb = math.sqrt(sem**2 + (sper_mean/math.sqrt(n))**2)
+    return (m, comb)
+
+print("PATCHED override (z2-gauge L=4..18; L=14/16/18 OBC kept at old):")
+for L in (4, 6, 8, 10, 12, 14, 16, 18):
+    for bdy in ("open_site", "PBC"):
+        if L in (14, 16, 18) and bdy == "open_site":
+            continue  # no patched OBC for these; keep existing
+        v = load_patched(L, bdy)
+        if v is not None:
+            data["z2-gauge"][(L, bdy)] = v
+            print(f"  L={L:2d} {bdy:9s}  M̄ = {v[0]:.5f} ± {v[1]:.5f}")
+
 # Code-averaged numbers w/ inter-code spread folded in as systematic.
 # Falls back to single-code if the other code's data isn't available yet
 # (e.g. partial L=18 update before claude finishes).
@@ -293,7 +331,7 @@ fit_d    = np.array([t[1] for t in _arr])
 fit_e    = np.array([t[2] for t in _arr])
 # Fit curves extend out to L=20 so the L=18 held-out point sits inside the
 # plotted range and we can see how each model extrapolates beyond.
-Lplot    = np.linspace(4, 20, 200)
+Lplot    = np.linspace(4, 22, 200)
 
 def _f_invL(L, a, b):           return a + b/L
 def _f_invL2(L, a, b):          return a + b/L**2
@@ -363,7 +401,7 @@ for label, fn, p0, color in fit_specs:
         print(f"  fit {label} failed: {e}")
 
 ax2.legend(loc="lower right", fontsize=7.5)
-ax2.set_xlim(3.5, 20.5)
+ax2.set_xlim(3.5, 22.5)
 
 print()
 print("Extrapolation fits to L → ∞ (L ≥ 8 only):")
@@ -493,7 +531,7 @@ for L, d, ep in zip(Ls_diff, diffs, err_plus):
 
 plt.tight_layout()
 for ext in ("png", "pdf"):
-    out = DATA / f"fv_convergence_final.{ext}"
+    out = DATA / f"fv_convergence_patched_warm640.{ext}"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"wrote {out}")
 

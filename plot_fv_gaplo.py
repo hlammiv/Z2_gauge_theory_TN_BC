@@ -24,16 +24,15 @@ def _sys_floor(L):
     if L <= 6: return 0.001
     return 0.003
 EMPIRICAL_DRIFT_UP = {
-    # L → {boundary → drift size}.  Most-recent nsweeps doubling per L:
-    #   L=8:  nsw=160 → 640
-    #   L=10: nsw=320 → 640
-    #   L=12,14: nsw=160 → 320 (nsw=640 still running)
-    #   L=16: nsw=320 → 640
-    8:  {"OBC": 0.00002, "PBC": 0.00076},  # nsw=160→640
-    10: {"OBC": 0.00052, "PBC": 0.00142},  # nsw=320→640
-    12: {"OBC": 0.00125, "PBC": 0.00367},  # nsw=320→640
-    14: {"OBC": 0.00151, "PBC": 0.00220},  # nsw=320→640
-    16: {"OBC": 0.0051,  "PBC": 0.0063},   # nsw=320→640
+    # gap_lo drifts scaled from M-bar drifts by 1/(1-f_high) ≈ 1/0.841 ≈ 1.19.
+    # f_high (band weight in the high band at gap≈2.38) is essentially nsw- and
+    # L-independent at ~0.159, so a M-bar drift of δ corresponds to a gap_lo
+    # drift of δ/(1-0.159).
+    8:  {"OBC": 0.00002, "PBC": 0.00090},
+    10: {"OBC": 0.00062, "PBC": 0.00169},
+    12: {"OBC": 0.00149, "PBC": 0.00436},
+    14: {"OBC": 0.00180, "PBC": 0.00262},
+    16: {"OBC": 0.0061,  "PBC": 0.0075},
 }
 
 DATA = Path("/home/hlamm/Desktop/QC/circuit_knitting/data")
@@ -85,7 +84,6 @@ LEN16_GAUGE_PBC_NSW1280 = DATA/"L16_PBC_eff2560/z2_gauge_theory"
 # Mean ~flat, seed spread tightened 3x. OBC stays at nsw=1280.
 LEN14_GAUGE_PBC_EFF1280 = DATA/"L14_PBC_eff1280/z2_gauge_theory"
 # L=18 gauge PBC override: eff10240 (warm-doubled from nsw=5120, 2026-05-30).
-# Drift +0.0003; nudges PBC toward small-L plateau ~1.612. OBC stays at nsw=5120.
 LEN18_GAUGE_PBC_EFF10240 = DATA/"L18_PBC_eff10240/z2_gauge_theory"
 
 # L=14: 4 seeds × 2 codes at nsweeps=640 (fully done)
@@ -104,14 +102,37 @@ LEN18 = {
 }
 L18_DROP_SEEDS = {3}  # set of seeds to exclude at L=18 only
 
+KMAX = 30
+GAP_BAND_CUT = 2.0  # gap_lo aggregates states with gap < GAP_BAND_CUT (meson band)
+
+def compute_gap_lo(r):
+    """gap_lo = Σ_{k≥1, gap_k<cut} w_k gap_k / Σ_{k≥1, gap_k<cut} w_k.
+    Per-row sigma propagated via std error of weighted mean using sigma_k.
+    Returns (gap_lo, sigma_gap_lo, W_band)."""
+    num = 0.0; den = 0.0; var = 0.0
+    for k in range(1, KMAX+1):
+        gk = float(r.get(f"gap_k{k}", 0.0))
+        wk = float(r.get(f"overlap_k{k}", 0.0))
+        sk = float(r.get(f"sigma_k{k}", 0.0))
+        if gk < GAP_BAND_CUT and wk > 0:
+            num += wk * gk
+            den += wk
+            var += (wk * sk) ** 2
+    if den <= 0:
+        return float("nan"), float("nan"), 0.0
+    glo = num / den
+    sig = (var ** 0.5) / den
+    return glo, sig, den
+
 def load_prod(path, L_list=(4,)):
-    """Return {(L, bdy): (gap, sigma)}."""
+    """Return {(L, bdy): (gap_lo, sigma)}."""
     out = {}
     for r in csv.DictReader(path.open()):
         L = int(r["L"])
         if L not in L_list: continue
         if r["boundary"] == "PBC" or (r["boundary"]=="open_site" and r["z2_obc_boundary"]=="truncate_xz"):
-            out[(L, r["boundary"])] = (float(r["barE_gap"]), float(r["sigma_barE"]))
+            glo, sig, _ = compute_gap_lo(r)
+            out[(L, r["boundary"])] = (glo, sig)
     return out
 
 def _seed_of(path):
@@ -134,7 +155,9 @@ def load_4seed(dirpath, L_list=(14,)):
                 continue
             if r["boundary"] == "PBC" or (r["boundary"]=="open_site" and r["z2_obc_boundary"]=="truncate_xz"):
                 key = (L, r["boundary"])
-                raw.setdefault(key, []).append((float(r["barE_gap"]), float(r["sigma_barE"])))
+                glo, sig, _ = compute_gap_lo(r)
+                if glo == glo:  # skip NaN
+                    raw.setdefault(key, []).append((glo, sig))
     out = {}
     for key, vals in raw.items():
         gs = [v[0] for v in vals]; ss = [v[1] for v in vals]
@@ -178,8 +201,7 @@ for code in PROD:
         new_l16pbc = load_4seed(LEN16_GAUGE_PBC_NSW1280, L_list=(16,))
         for k, v in new_l16pbc.items():
             data[code][k] = v
-    # L=18 gauge PBC override at eff10240 (Phase C refinement).
-    # MUST come after LEN18 base load.
+    # L=18 gauge PBC override at eff10240 (Phase C).
     if code == "z2-gauge" and LEN18_GAUGE_PBC_EFF10240.exists():
         new_l18pbc = load_4seed(LEN18_GAUGE_PBC_EFF10240, L_list=(18,))
         for k, v in new_l18pbc.items():
@@ -233,7 +255,7 @@ ax.errorbar(shift(L_c_obc, +0.08), g_c_obc, yerr=s_c_obc, fmt="o--", color="tab:
             capsize=4, markersize=7, mfc="none", label="OBC z2-claude")
 ax.errorbar(shift(L_c_pbc, +0.08), g_c_pbc, yerr=s_c_pbc, fmt="s--", color="tab:orange",
             capsize=4, markersize=7, mfc="none", label="PBC z2-claude")
-ax.set_ylabel(r"$\bar M = \bar{\rm gap}$  (spectral 1st moment, $O_{p=0}$)", fontsize=12)
+ax.set_ylabel(r"$\overline{\rm gap}_{\rm lo}$  (meson-band 1st moment, $O_{p=0}$, $\Delta<2$)", fontsize=12)
 ax.set_title(r"FV at $(m_0=0.1,\ \eta=0.5,\ \alpha=1,\ bg=(-1,-1))$" + "\n"
              r"$k_{max}=30$, maxdim=300, nsweeps=640 ($L=6$–$16$); 4 seeds at $L \geq 8$",
              fontsize=11)
@@ -493,7 +515,7 @@ for L, d, ep in zip(Ls_diff, diffs, err_plus):
 
 plt.tight_layout()
 for ext in ("png", "pdf"):
-    out = DATA / f"fv_convergence_final.{ext}"
+    out = DATA / f"fv_convergence_gaplo.{ext}"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"wrote {out}")
 
