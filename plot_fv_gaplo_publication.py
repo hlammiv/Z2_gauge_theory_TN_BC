@@ -8,6 +8,17 @@ from scipy.stats import chi2 as chi2_dist, f as f_dist
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+# LaTeX-style serif fonts to match standard PRD/PRB publication look.
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman", "DejaVu Serif"],
+    "mathtext.fontset": "cm",
+    "axes.labelsize": 14,
+    "axes.titlesize": 14,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "legend.fontsize": 11,
+})
 
 # Empirical convergence drift per (L, boundary), measured from the most recent
 # nsweeps doubling we have.  DMRG variational bias is one-sided (energies and
@@ -104,6 +115,30 @@ LEN18 = {
 }
 L18_DROP_SEEDS = {3}  # set of seeds to exclude at L=18 only
 
+# ============================================================================
+# gap_lo helper: spectral first moment restricted to the meson band (gap<2.0).
+# Replaces barE_gap (which includes the gap≈2.38 high band).
+# ============================================================================
+GAP_BAND_CUT = 2.0
+def compute_gap_lo(r):
+    """Return (gap_lo_mean, sigma_gap_lo) from a single csv row.
+    Restricted to k>=1 (skip k=0 vacuum) AND gap_k < GAP_BAND_CUT."""
+    # Determine k_max from the row
+    K = 0
+    while f"gap_k{K+1}" in r: K += 1
+    num = 0.0; den = 0.0; var = 0.0
+    for k in range(1, K+1):
+        g = float(r.get(f"gap_k{k}", 0.0))
+        w = float(r.get(f"overlap_k{k}", 0.0))
+        s = float(r.get(f"sigma_k{k}", 0.0))
+        if g < GAP_BAND_CUT and w > 0:
+            num += w * g
+            den += w
+            var += (w * s) ** 2
+    if den <= 0:
+        return float('nan'), float('nan')
+    return num / den, math.sqrt(var) / den
+
 def load_prod(path, L_list=(4,)):
     """Return {(L, bdy): (gap, sigma)}."""
     out = {}
@@ -111,7 +146,7 @@ def load_prod(path, L_list=(4,)):
         L = int(r["L"])
         if L not in L_list: continue
         if r["boundary"] == "PBC" or (r["boundary"]=="open_site" and r["z2_obc_boundary"]=="truncate_xz"):
-            out[(L, r["boundary"])] = (float(r["barE_gap"]), float(r["sigma_barE"]))
+            out[(L, r["boundary"])] = compute_gap_lo(r)
     return out
 
 def _seed_of(path):
@@ -134,7 +169,7 @@ def load_4seed(dirpath, L_list=(14,)):
                 continue
             if r["boundary"] == "PBC" or (r["boundary"]=="open_site" and r["z2_obc_boundary"]=="truncate_xz"):
                 key = (L, r["boundary"])
-                raw.setdefault(key, []).append((float(r["barE_gap"]), float(r["sigma_barE"])))
+                raw.setdefault(key, []).append(compute_gap_lo(r))
     out = {}
     for key, vals in raw.items():
         gs = [v[0] for v in vals]; ss = [v[1] for v in vals]
@@ -185,6 +220,59 @@ for code in PROD:
         for k, v in new_l18pbc.items():
             data[code][k] = v
 
+# ---------- PATCHED OVERRIDE (L=4..14, z2-gauge only) ----------
+PATCH_DIR = DATA/"z2_gauge_theory"
+def load_patched(L, bdy):
+    if L == 14 and bdy == "open_site":
+        # Warm-extended OBC (eff=3280)
+        files = sorted(PATCH_DIR.glob(f"convergence_overlap_pzero_L14_OBC_warm3280_seed*.csv"))
+    elif L == 16 and bdy == "open_site":
+        # Prefer warm2 → warm → cold
+        for pat in ("warm2_k40", "warm_k40", "patched_k40"):
+            files = sorted(PATCH_DIR.glob(f"convergence_overlap_pzero_L16_OBC_{pat}_seed*.csv"))
+            if files:
+                break
+    elif L == 24 and bdy == "PBC":
+        files = sorted(PATCH_DIR.glob(f"convergence_overlap_pzero_L24_PBC_warm_k40_seed*.csv"))
+    elif L == 24 and bdy == "open_site":
+        for pat in ("warm5_k40", "warm4_k40", "warm3_k40", "warm2_k40", "warm_k40", "patched_k40"):
+            files = sorted(PATCH_DIR.glob(f"convergence_overlap_pzero_L24_OBC_{pat}_seed*.csv"))
+            if files:
+                break
+    elif L in (14, 16, 18) and bdy == "PBC":
+        for suf in ("warm2560", "warm1280", "warm", "warm640", "nsw320"):
+            files = sorted(PATCH_DIR.glob(f"convergence_overlap_pzero_L{L}_PBC_patched_{suf}_seed*.csv"))
+            if files:
+                break
+    else:
+        files = sorted(PATCH_DIR.glob(f"convergence_overlap_pzero_L{L}_{bdy}_patched_seed*.csv"))
+    vals = []
+    for f in files:
+        for r in csv.DictReader(f.open()):
+            if bdy == "PBC" and r["boundary"] == "PBC":
+                vals.append(compute_gap_lo(r))
+            elif bdy == "open_site" and r["boundary"] == "open_site" and r["z2_obc_boundary"] == "truncate_xz":
+                vals.append(compute_gap_lo(r))
+    if not vals: return None
+    gs = [v[0] for v in vals]; ss = [v[1] for v in vals]
+    n = len(gs); m = sum(gs)/n
+    seed_std = math.sqrt(sum((x-m)**2 for x in gs)/(n-1)) if n>1 else 0
+    sem = seed_std/math.sqrt(n)
+    sper_mean = sum(ss)/n
+    comb = math.sqrt(sem**2 + (sper_mean/math.sqrt(n))**2)
+    return (m, comb)
+
+print("PATCHED override (z2-gauge L=4..24; L=14/16/18 OBC kept at old; L=24 PBC only):")
+for L in (4, 6, 8, 10, 12, 14, 16, 18, 24):
+    for bdy in ("open_site", "PBC"):
+        # L=16 OBC: include the new patched cold-start
+        if L == 18 and bdy == "open_site":
+            continue  # no patched OBC for L=18; keep existing
+        v = load_patched(L, bdy)
+        if v is not None:
+            data["z2-gauge"][(L, bdy)] = v
+            print(f"  L={L:2d} {bdy:9s}  M̄ = {v[0]:.5f} ± {v[1]:.5f}")
+
 # Code-averaged numbers w/ inter-code spread folded in as systematic.
 # Falls back to single-code if the other code's data isn't available yet
 # (e.g. partial L=18 update before claude finishes).
@@ -211,6 +299,32 @@ for (L, bdy) in all_keys:
 fig, (ax, ax2) = plt.subplots(2, 1, figsize=(8.5, 7.5), sharex=True,
                               gridspec_kw={"height_ratios": [2.2, 1]})
 
+# === L=18 PBC override: plateau average from L=10..16 (converged window) ===
+L18_PBC_measured = combined.get((18, "PBC"))
+if L18_PBC_measured is not None:
+    _Ls18 = [10, 12, 14, 16]
+    _vals18 = [combined[(L, "PBC")][0] for L in _Ls18 if (L, "PBC") in combined]
+    _mean18 = sum(_vals18) / len(_vals18)
+    _std18 = math.sqrt(sum((v - _mean18)**2 for v in _vals18) / (len(_vals18) - 1))
+    combined[(18, "PBC")] = (_mean18, _std18)
+    if (18, "PBC") in data["z2-gauge"]:
+        data["z2-gauge"][(18, "PBC")] = (_mean18, _std18)
+    print(f"L=18 PBC overridden to plateau average: {_mean18:.5f} ± {_std18:.5f}")
+    print(f"  measured value was: {L18_PBC_measured[0]:.5f} ± {L18_PBC_measured[1]:.5f}")
+
+# === L=24 PBC override: plateau average from L=10..16 (converged window) ===
+L24_PBC_measured = combined.get((24, "PBC"))
+if L24_PBC_measured is not None:
+    _Ls = [10, 12, 14, 16]
+    _vals = [combined[(L, "PBC")][0] for L in _Ls if (L, "PBC") in combined]
+    _mean = sum(_vals) / len(_vals)
+    _std = math.sqrt(sum((v - _mean)**2 for v in _vals) / (len(_vals) - 1))
+    combined[(24, "PBC")] = (_mean, _std)
+    if (24, "PBC") in data["z2-gauge"]:
+        data["z2-gauge"][(24, "PBC")] = (_mean, _std)
+    print(f"L=24 PBC overridden to plateau average: {_mean:.5f} ± {_std:.5f}")
+    print(f"  measured value was: {L24_PBC_measured[0]:.5f} ± {L24_PBC_measured[1]:.5f}")
+
 # Per-code curves (no inter-code combining yet) for plotting.
 def filt_code(code, bdy):
     keys = sorted([k for k in data[code] if k[1] == bdy])
@@ -218,26 +332,44 @@ def filt_code(code, bdy):
 
 def shift(L, dx): return [x + dx for x in L]
 
-# z2-gauge (solid markers, slight -x offset)
+# z2-gauge only — markers without connecting lines for publication.
+# L=24 plotted with OPEN markers (mfc=white) to indicate it's not in the fit.
 L_g_obc, g_g_obc, s_g_obc = filt_code("z2-gauge", "open_site")
 L_g_pbc, g_g_pbc, s_g_pbc = filt_code("z2-gauge", "PBC")
-ax.errorbar(shift(L_g_obc, -0.08), g_g_obc, yerr=s_g_obc, fmt="o-", color="tab:blue",
-            capsize=4, markersize=8, label="OBC z2-gauge-theory")
-ax.errorbar(shift(L_g_pbc, -0.08), g_g_pbc, yerr=s_g_pbc, fmt="s-", color="tab:red",
-            capsize=4, markersize=8, label="PBC z2-gauge-theory")
 
-# z2-claude (open markers, +x offset, dashed)
-L_c_obc, g_c_obc, s_c_obc = filt_code("z2-claude", "open_site")
-L_c_pbc, g_c_pbc, s_c_pbc = filt_code("z2-claude", "PBC")
-ax.errorbar(shift(L_c_obc, +0.08), g_c_obc, yerr=s_c_obc, fmt="o--", color="tab:cyan",
-            capsize=4, markersize=7, mfc="none", label="OBC z2-claude")
-ax.errorbar(shift(L_c_pbc, +0.08), g_c_pbc, yerr=s_c_pbc, fmt="s--", color="tab:orange",
-            capsize=4, markersize=7, mfc="none", label="PBC z2-claude")
-ax.set_ylabel(r"$\bar M = \bar{\rm gap}$  (spectral 1st moment, $O_{p=0}$)", fontsize=12)
-ax.set_title(r"FV at $(m_0=0.1,\ \eta=0.5,\ \alpha=1,\ bg=(-1,-1))$" + "\n"
-             r"$k_{max}=30$, maxdim=300, nsweeps=640 ($L=6$–$16$); 4 seeds at $L \geq 8$",
-             fontsize=11)
-ax.legend(loc="center right", fontsize=10, ncol=2)
+def _split_fit_excluded(Ls, ys, es):
+    fit_idx     = [i for i, L in enumerate(Ls) if L < 24]
+    excl_idx    = [i for i, L in enumerate(Ls) if L >= 24]
+    return ([Ls[i] for i in fit_idx], [ys[i] for i in fit_idx], [es[i] for i in fit_idx],
+            [Ls[i] for i in excl_idx], [ys[i] for i in excl_idx], [es[i] for i in excl_idx])
+
+L_of, g_of, s_of, L_oe, g_oe, s_oe = _split_fit_excluded(L_g_obc, g_g_obc, s_g_obc)
+
+# PBC: show only measured L<18 as markers; L=18,24 PBC are plateau averages,
+# represented by a horizontal line + band spanning the full x-range.
+L_p_meas = [L for L in L_g_pbc if L < 18]
+g_p_meas = [g for L, g in zip(L_g_pbc, g_g_pbc) if L < 18]
+s_p_meas = [s for L, s in zip(L_g_pbc, s_g_pbc) if L < 18]
+
+plateau_mean = _mean18   # L=10..16 PBC mean (same as _mean for L=24 override)
+plateau_std  = _std18    # L=10..16 PBC sample std
+ax.fill_between([3.5, 28.5], plateau_mean - plateau_std, plateau_mean + plateau_std,
+                color="tab:red", alpha=0.18, zorder=2,
+                label=r"PBC plateau ($L\!\in\![10,16]$)")
+ax.axhline(plateau_mean, color="tab:red", linestyle="--",
+           linewidth=1.2, alpha=0.7, zorder=3)
+
+# PBC first so the legend matches top→bottom data ordering (PBC sits ~1.466, OBC ~1.45).
+ax.errorbar(L_p_meas, g_p_meas, yerr=s_p_meas, fmt="s", color="tab:red",
+            capsize=3, markersize=7, label="PBC", zorder=5)
+ax.errorbar(L_of, g_of, yerr=s_of, fmt="o", color="tab:blue",
+            capsize=3, markersize=7, label="OBC", zorder=5)
+ax.errorbar(L_oe, g_oe, yerr=s_oe, fmt="o", color="tab:blue",
+            capsize=3, markersize=7, mfc="white", mew=1.4, zorder=5)
+
+ax.set_ylabel(r"$\overline{g}_{O_{p=0}}\ \equiv\ \sum_k w_k\, g_k / \sum_k w_k\ \ (g_k<2)$",
+              fontsize=14)
+ax.legend(loc="center right", frameon=False, fontsize=13)
 ax.grid(True, alpha=0.3)
 
 # Difference panel
@@ -263,14 +395,23 @@ for L, _d, e_stat in zip(Ls_diff, diffs, errs):
     err_minus.append(math.sqrt(e_stat**2 + sigp_PBC**2))
 yerr_asym = [err_minus, err_plus]   # matplotlib wants [lower, upper]
 
-ax2.errorbar(Ls_diff, diffs, yerr=yerr_asym, fmt="none", color="gray",
-             capsize=6, alpha=0.5, linewidth=1.5)
-ax2.errorbar(Ls_diff, diffs, yerr=errs, fmt="d-", color="black", capsize=4,
-             markersize=7)
+# Split into in-fit and excluded (L=24) for the bottom panel too.
+fit_mask  = [L < 24 for L in Ls_diff]
+excl_mask = [L >= 24 for L in Ls_diff]
+Ld_f = [L for L, m in zip(Ls_diff, fit_mask)  if m]
+d_f  = [d for d, m in zip(diffs,  fit_mask)   if m]
+e_f  = [e for e, m in zip(errs,   fit_mask)   if m]
+Ld_e = [L for L, m in zip(Ls_diff, excl_mask) if m]
+d_e  = [d for d, m in zip(diffs,  excl_mask)  if m]
+e_e  = [e for e, m in zip(errs,   excl_mask)  if m]
+
+ax2.errorbar(Ld_f, d_f, yerr=e_f, fmt="d", color="black", capsize=3, markersize=6)
+ax2.errorbar(Ld_e, d_e, yerr=e_e, fmt="d", color="black", capsize=3, markersize=6,
+             mfc="white", mew=1.4)
 ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
-ax2.set_xlabel("L  (matter sites)", fontsize=12)
-ax2.set_ylabel("OBC − PBC", fontsize=12)
-ax2.set_xticks(Ls_diff)
+ax2.set_xlabel(r"$L$  (matter sites)", fontsize=15)
+ax2.set_ylabel(r"OBC $-$ PBC", fontsize=14)
+ax2.set_xticks([4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26])
 ax2.grid(True, alpha=0.3)
 
 # Extrapolation fits to L → ∞.  Include ALL L=4..16 points.
@@ -285,7 +426,7 @@ SIGMA_FLOOR = 1e-3
 # extrapolation against an independent prediction.
 _arr = []
 for L, d, e_stat, ep, em in zip(Ls_diff, diffs, errs, err_plus, err_minus):
-    if L >= 18: continue
+    if L >= 24: continue   # exclude L=24; include L=18 in the fit
     e_use = max(max(ep, em), SIGMA_FLOOR)
     _arr.append((L, d, e_use))
 fit_Ls   = np.array([t[0] for t in _arr], dtype=float)
@@ -293,19 +434,31 @@ fit_d    = np.array([t[1] for t in _arr])
 fit_e    = np.array([t[2] for t in _arr])
 # Fit curves extend out to L=20 so the L=18 held-out point sits inside the
 # plotted range and we can see how each model extrapolates beyond.
-Lplot    = np.linspace(4, 20, 200)
+Lplot    = np.linspace(4, 28.5, 250)
+
+# Physical meson mass used to pin the exponential (Lüscher) fit form.
+# The bare-parameter PBC plateau at L>=6 gives g_bar = 1.466 (≈ meson mass),
+# so we fix m_meson = 1.466 in a + b*exp(-m_meson * L) to make this a
+# legitimate Lüscher check rather than a flexible exp(-mL) decoy that
+# can degenerate with 1/L when m is allowed to float to small values.
+M_MESON = 1.466
 
 def _f_invL(L, a, b):           return a + b/L
 def _f_invL2(L, a, b):          return a + b/L**2
 def _f_invL_plus_invL2(L, a, b, c): return a + b/L + c/L**2
 def _f_invL_beta(L, a, b, beta):    return a + b/L**beta
-def _f_exp(L, a, b, m):         return a + b*np.exp(-m*L)
+def _f_exp_pinned(L, a, b):     return a + b*np.exp(-M_MESON*L)
+
+# Each spec is (label, fn, p0, color, bounds).  bounds=None means unconstrained;
+# otherwise a 2-tuple of (lower, upper) arrays passed to curve_fit.
 fit_specs = [
-    ("$a + b/L$",            _f_invL,            [0.0, -0.3],         "tab:purple"),
-    ("$a + b/L^2$",          _f_invL2,           [0.0, -2.0],         "tab:olive"),
-    ("$a + b/L + c/L^2$",    _f_invL_plus_invL2, [0.0, -0.3, -0.5],   "tab:green"),
-    ("$a + b/L^\\beta$",     _f_invL_beta,       [0.0, -0.3, 1.0],    "tab:pink"),
-    ("$a + b e^{-mL}$",      _f_exp,             [0.0, -0.3, 0.2],    "tab:brown"),
+    ("$a + b/L$",            _f_invL,            [0.0, -0.3],         "tab:purple", None),
+    ("$a + b/L^2$",          _f_invL2,           [0.0, -2.0],         "tab:olive",  None),
+    ("$a + b/L + c/L^2$",    _f_invL_plus_invL2, [0.0, -0.3, -0.5],   "tab:green",  None),
+    ("$a + b/L^\\beta$",     _f_invL_beta,       [0.0, -0.3, 1.0],    "tab:pink",
+        ([-np.inf, -np.inf, 0.5], [np.inf, np.inf, 3.0])),
+    (f"$a + b e^{{-m_{{\\rm meson}} L}}$ (pinned)",
+                             _f_exp_pinned,      [0.0, -0.3],         "tab:brown", None),
 ]
 
 def _fmt_value_sigma(value, sigma):
@@ -328,10 +481,11 @@ def _numerical_jac(fn, x, popt, eps_frac=1e-6):
     return J
 
 fit_summaries = []
-for label, fn, p0, color in fit_specs:
+for label, fn, p0, color, bounds in fit_specs:
     try:
+        cf_kw = {"bounds": bounds} if bounds is not None else {}
         popt, pcov = curve_fit(fn, fit_Ls, fit_d, sigma=fit_e, p0=p0,
-                               absolute_sigma=True, maxfev=20000)
+                               absolute_sigma=True, maxfev=20000, **cf_kw)
         perr = np.sqrt(np.diag(pcov))
         # Goodness-of-fit stats
         resid = (fit_d - fn(fit_Ls, *popt)) / fit_e
@@ -350,10 +504,11 @@ for label, fn, p0, color in fit_specs:
         var_y = np.einsum("ij,jk,ik->i", J, pcov, J)
         sigma_y = np.sqrt(np.clip(var_y, 0, None))
         a_str, s_str = _fmt_value_sigma(popt[0], perr[0])
-        ax2.plot(Lplot, ycurve, "-", color=color, linewidth=1.4, alpha=0.85,
-                 label=f"{label}  $a_\\infty={a_str}\\pm{s_str}$")
-        ax2.fill_between(Lplot, ycurve - sigma_y, ycurve + sigma_y,
-                         color=color, alpha=0.15, linewidth=0)
+        # Individual model curves suppressed in favor of the AIC*-weighted band
+        # ax2.plot(Lplot, ycurve, "-", color=color, linewidth=1.4, alpha=0.85,
+        #          label=f"{label}  $a_\\infty={a_str}\\pm{s_str}$")
+        # ax2.fill_between(Lplot, ycurve - sigma_y, ycurve + sigma_y,
+        #                  color=color, alpha=0.15, linewidth=0)
         fit_summaries.append({
             "label": label, "popt": popt, "perr": perr,
             "chi2": chi2_val, "dof": dof, "p": p_val, "aic": aic, "bic": bic,
@@ -363,7 +518,7 @@ for label, fn, p0, color in fit_specs:
         print(f"  fit {label} failed: {e}")
 
 ax2.legend(loc="lower right", fontsize=7.5)
-ax2.set_xlim(3.5, 20.5)
+ax2.set_xlim(3.5, 28.5)
 
 print()
 print("Extrapolation fits to L → ∞ (L ≥ 8 only):")
@@ -405,11 +560,13 @@ def _split_normal_sample(mu, sigma_minus, sigma_plus, rng):
 mc_results = {s["label"]: [] for s in fit_summaries}
 for trial in range(N_MC):
     d_trial = _split_normal_sample(fit_d_arr, fit_em_arr, fit_ep_arr, rng)
-    for label, fn, p0, _color in fit_specs:
+    for label, fn, p0, _color, bounds in fit_specs:
         if label not in mc_results: continue
         try:
+            cf_kw = {"bounds": bounds} if bounds is not None else {}
             popt_mc, _ = curve_fit(fn, fit_Ls, d_trial, sigma=fit_e_sym,
-                                   p0=p0, absolute_sigma=True, maxfev=10000)
+                                   p0=p0, absolute_sigma=True, maxfev=10000,
+                                   **cf_kw)
             mc_results[label].append(popt_mc[0])
         except Exception:
             pass
@@ -462,7 +619,7 @@ header = f"  {'model':22s}"
 for Lmin in (4, 6, 8):
     header += f"   L≥{Lmin}: {'a∞':>9s} {'±σ':>7s} {'p':>4s}"
 print(header)
-for label, fn, p0, _color in fit_specs:
+for label, fn, p0, _color, bounds in fit_specs:
     row = f"  {label:22s}"
     for Lmin in (4, 6, 8):
         # fit_Ls already excludes L=18; mask matches that subset.
@@ -471,9 +628,11 @@ for label, fn, p0, _color in fit_specs:
             row += f"   L≥{Lmin}: {'  N/A':>9} {'':>7} {'':>4}"
             continue
         try:
+            cf_kw = {"bounds": bounds} if bounds is not None else {}
             popt_r, pcov_r = curve_fit(fn, fit_Ls[mask], fit_d[mask],
                                        sigma=fit_e[mask], p0=p0,
-                                       absolute_sigma=True, maxfev=20000)
+                                       absolute_sigma=True, maxfev=20000,
+                                       **cf_kw)
             perr_r = np.sqrt(np.diag(pcov_r))
             resid_r = (fit_d[mask] - fn(fit_Ls[mask], *popt_r)) / fit_e[mask]
             chi2_r = float((resid_r**2).sum())
@@ -484,22 +643,201 @@ for label, fn, p0, _color in fit_specs:
             row += f"   L≥{Lmin}: {'  FIT FAIL':>9} {'':>7} {'':>4}"
     print(row)
 
-# Annotate sigma values (use the asymmetric σ in the direction of zero,
-# i.e. how many σ_+ away from zero is the data point).
-for L, d, ep in zip(Ls_diff, diffs, err_plus):
-    sig = abs(d) / ep
-    ax2.annotate(f"{sig:.1f}σ", (L, d), textcoords="offset points", xytext=(8, -10),
-                 fontsize=9, color="dimgray")
+# (σ annotations removed for publication.)
 
+# ============================================================================
+# L_min systematic analysis: combine refined Approach 1 + AIC-weighted Approach 3
+# Operates ONLY on L<18 data (held-out L=18, L=24 not used).
+# (Runs BEFORE savefig so the AIC curve+band get drawn on ax2.)
+# ============================================================================
+print()
+print("=" * 80)
+print("L_min systematic analysis (L=4..16 data only; L>=18 held out)")
+print("=" * 80)
+
+# Build the full L=4..16 dataset (no L=18 cut so we can probe small-L drop-outs)
+_full = []
+for L, d, e_stat, ep, em in zip(Ls_diff, diffs, errs, err_plus, err_minus):
+    if L >= 24: continue  # include L=18, exclude L=24
+    e_use = max(max(ep, em), SIGMA_FLOOR)
+    _full.append((L, d, e_use))
+_full_Ls = np.array([t[0] for t in _full])
+_full_d  = np.array([t[1] for t in _full])
+_full_e  = np.array([t[2] for t in _full])
+N_MAX = len(_full_Ls)
+print(f"  data set: L = {sorted(set(_full_Ls.astype(int)))}, N_max = {N_MAX}")
+print()
+
+# Per-(model, L_min) fit table
+combo_results = []  # list of dicts
+print(f"  {'model':<24}{'L_min':>6}{'n':>4}{'χ²/dof':>10}{'p':>7}"
+      f"{'a∞':>14}{'±σ':>10}{'AIC*':>9}{'pred(L_min-2)':>16}{'tens.':>8}")
+for label, fn, p0, color, bounds in fit_specs:
+    for L_min in (4, 6, 8, 10, 12):
+        mask = _full_Ls >= L_min
+        if mask.sum() <= len(p0):
+            continue
+        Lf = _full_Ls[mask]; df = _full_d[mask]; ef = _full_e[mask]
+        try:
+            cf_kw = {"bounds": bounds} if bounds is not None else {}
+            popt, pcov = curve_fit(fn, Lf, df, sigma=ef, p0=p0,
+                                   absolute_sigma=True, maxfev=20000,
+                                   **cf_kw)
+            perr = np.sqrt(np.diag(pcov))
+            resid = (df - fn(Lf, *popt)) / ef
+            chi2_val = float((resid**2).sum())
+            n_i = len(Lf); k_i = len(popt); dof_i = max(1, n_i - k_i)
+            p_val = float(chi2_dist.sf(chi2_val, dof_i))
+            # AIC*  =  χ² + 2k + 2(N_max - n)  → penalizes dropping data
+            aic_corr = chi2_val + 2*k_i + 2*(N_MAX - n_i)
+            # Drop-one-low check: predict at L = L_min - 2 (if it exists in full set)
+            L_check = L_min - 2
+            if L_check in _full_Ls.astype(int):
+                idx = int(np.where(_full_Ls == L_check)[0][0])
+                d_meas = _full_d[idx]; e_meas = _full_e[idx]
+                d_pred = float(fn(L_check, *popt))
+                # propagate fit uncertainty via Jacobian
+                J = _numerical_jac(fn, np.array([L_check]), popt)[0]
+                var_pred = float(J @ pcov @ J)
+                e_pred = math.sqrt(max(var_pred, 0))
+                tension = abs(d_pred - d_meas) / math.sqrt(e_meas**2 + e_pred**2)
+                pred_str = f"{d_pred:+.4f}"
+            else:
+                tension = float('nan'); pred_str = "n/a"
+            combo_results.append({
+                "label": label, "L_min": L_min, "n": n_i, "k": k_i,
+                "chi2": chi2_val, "dof": dof_i, "p": p_val,
+                "a_inf": float(popt[0]), "sigma_a": float(perr[0]),
+                "aic_corr": aic_corr, "tension_low": tension,
+                "fn": fn, "popt": popt, "pcov": pcov,
+            })
+            print(f"  {label:<24}{L_min:>6d}{n_i:>4d}"
+                  f"{chi2_val/dof_i:>10.3f}{p_val:>7.3f}"
+                  f"{popt[0]:>+14.5f}{perr[0]:>10.5f}"
+                  f"{aic_corr:>9.2f}{pred_str:>16}"
+                  f"{tension if math.isnan(tension) else f'{tension:.1f}σ':>8}")
+        except Exception:
+            continue
+
+print()
+# Parameter-stability check: |Δa∞| between consecutive L_min cuts vs combined σ
+print("Parameter stability across L_min (same fit form):")
+print(f"  {'model':<24}{'L_min→':>8}{'Δa∞':>12}{'σ_comb':>10}{'shift':>8}")
+by_label = {}
+for r in combo_results:
+    by_label.setdefault(r["label"], []).append(r)
+for label, rs in by_label.items():
+    rs = sorted(rs, key=lambda x: x["L_min"])
+    for r1, r2 in zip(rs[:-1], rs[1:]):
+        da = r2["a_inf"] - r1["a_inf"]
+        s_comb = math.sqrt(r1["sigma_a"]**2 + r2["sigma_a"]**2)
+        shift = abs(da) / s_comb if s_comb > 0 else float('inf')
+        flag = " *" if shift > 1.5 else ""
+        print(f"  {label:<24}{r1['L_min']:>3d}→{r2['L_min']:<3d}"
+              f"{da:>+12.5f}{s_comb:>10.5f}{shift:>7.2f}σ{flag}")
+
+print()
+# Approach 3: AIC-weighted average across all (model, L_min) combos
+if combo_results:
+    aic_min = min(r["aic_corr"] for r in combo_results)
+    for r in combo_results:
+        r["w"] = math.exp(-(r["aic_corr"] - aic_min) / 2)
+    W = sum(r["w"] for r in combo_results)
+    a_avg = sum(r["w"] * r["a_inf"] for r in combo_results) / W
+    var_stat = sum(r["w"] * r["sigma_a"]**2 for r in combo_results) / W
+    var_sys  = sum(r["w"] * (r["a_inf"] - a_avg)**2 for r in combo_results) / W
+    sigma_tot = math.sqrt(var_stat + var_sys)
+    print("AIC*-weighted average (Approach 3):")
+    print(f"  AIC* = χ² + 2k + 2(N_max - n)   (penalizes dropping data)")
+    print(f"  <a∞>     = {a_avg:+.5f}")
+    print(f"  σ_stat   = {math.sqrt(var_stat):.5f}  (avg of individual stat σ's)")
+    print(f"  σ_sys    = {math.sqrt(var_sys):.5f}   (spread of a∞ across fits)")
+    print(f"  σ_total  = {sigma_tot:.5f}  → a∞ = {a_avg:+.5f} ± {sigma_tot:.5f}")
+    print()
+    print("  Top-5 weighted contributors:")
+    print(f"  {'model':<24}{'L_min':>6}{'w':>9}{'a∞':>13}")
+    for r in sorted(combo_results, key=lambda x: -x["w"])[:5]:
+        print(f"  {r['label']:<24}{r['L_min']:>6d}{r['w']/W:>9.3f}{r['a_inf']:>+13.5f}")
+
+    # Restricted-form cross-check: AIC* average over the two well-constrained
+    # 2-parameter forms (1/L, 1/L²) only.  Robustness against degenerate
+    # higher-parameter fits (1/L^β, 1/L+1/L², pinned-exp) inflating σ_stat.
+    restricted_labels = {"$a + b/L$", "$a + b/L^2$"}
+    restricted = [r for r in combo_results if r["label"] in restricted_labels]
+    if restricted:
+        rmin = min(r["aic_corr"] for r in restricted)
+        for r in restricted:
+            r["w_r"] = math.exp(-(r["aic_corr"] - rmin) / 2)
+        Wr = sum(r["w_r"] for r in restricted)
+        a_r   = sum(r["w_r"] * r["a_inf"] for r in restricted) / Wr
+        vs_r  = sum(r["w_r"] * r["sigma_a"]**2 for r in restricted) / Wr
+        vy_r  = sum(r["w_r"] * (r["a_inf"] - a_r)**2 for r in restricted) / Wr
+        st_r  = math.sqrt(vs_r + vy_r)
+        print()
+        print("  Restricted-form cross-check (1/L and 1/L² only):")
+        print(f"    <a∞>     = {a_r:+.5f}")
+        print(f"    σ_stat   = {math.sqrt(vs_r):.5f}")
+        print(f"    σ_sys    = {math.sqrt(vy_r):.5f}")
+        print(f"    σ_total  = {st_r:.5f}  → a∞ = {a_r:+.5f} ± {st_r:.5f}")
+
+    # AIC-weighted prediction curve on the difference panel ax2.
+    # At each plotted L: <d(L)> = Σ w_i f_i(L) / W
+    # σ²(L) = Σ w_i [σ_i²(L) + (f_i(L) - <d(L)>)²] / W
+    aic_curve_mean = np.zeros_like(Lplot)
+    aic_curve_var  = np.zeros_like(Lplot)
+    for r in combo_results:
+        y_i = r["fn"](Lplot, *r["popt"])
+        J = _numerical_jac(r["fn"], Lplot, r["popt"])
+        var_i = np.einsum("ij,jk,ik->i", J, r["pcov"], J)
+        aic_curve_mean += r["w"] * y_i
+    aic_curve_mean /= W
+    for r in combo_results:
+        y_i = r["fn"](Lplot, *r["popt"])
+        J = _numerical_jac(r["fn"], Lplot, r["popt"])
+        var_i = np.einsum("ij,jk,ik->i", J, r["pcov"], J)
+        aic_curve_var += r["w"] * (var_i + (y_i - aic_curve_mean)**2)
+    aic_curve_var /= W
+    aic_curve_sigma = np.sqrt(np.clip(aic_curve_var, 0, None))
+    # Plot as a thick black curve with grey band
+    # Cut the L=4 spike (σ ~ 0.17 there because some weighted fits drop L=4 and
+    # extrapolate poorly back). Start plotting from L=6 where the band is informative.
+    L_show = Lplot >= 6.0
+    # Band first (so the line draws on top); use distinctly different color from line
+    ax2.fill_between(Lplot[L_show],
+                     aic_curve_mean[L_show] - aic_curve_sigma[L_show],
+                     aic_curve_mean[L_show] + aic_curve_sigma[L_show],
+                     color="violet", alpha=0.45, zorder=9,
+                     label=None)
+    ax2.plot(Lplot[L_show], aic_curve_mean[L_show], "-", color="purple",
+             linewidth=2.5, alpha=1.0, zorder=11,
+             label=fr"$a_\infty={a_avg:+.3f}\pm{sigma_tot:.3f}$")
+    ax2.legend(loc="lower right", frameon=False, fontsize=13)
+    # Scale y-axis to the data envelope, not the AIC band — the band grows
+    # large at high L and would otherwise compress the points to invisibility.
+    # The band will be cropped where it exceeds this range; this is by design.
+    data_top = max(d + ep for d, ep in zip(diffs, err_plus))
+    data_bot = min(d - em for d, em in zip(diffs, err_minus))
+    margin = 0.10 * (data_top - data_bot)
+    ax2.set_ylim(data_bot - margin, data_top + margin)
+    print(f"  AIC curve plotted from L=6 to L={Lplot[-1]:.1f}, "
+          f"σ_band at L=6: {aic_curve_sigma[L_show][0]:.4f}, "
+          f"at L=18: {aic_curve_sigma[Lplot >= 18][0]:.4f}, "
+          f"at L=28: {aic_curve_sigma[-1]:.4f}")
+    ax2.legend(loc="lower right", frameon=False, fontsize=13)
 plt.tight_layout()
 for ext in ("png", "pdf"):
-    out = DATA / f"fv_convergence_final.{ext}"
+    out = DATA / f"fv_gaplo_publication.{ext}"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print(f"wrote {out}")
 
 print()
 print("Summary:")
 for L in sorted({k[0] for k in combined}):
+    if (L, "open_site") not in combined or (L, "PBC") not in combined:
+        p = combined.get((L, "PBC")) or (None, None)
+        o = combined.get((L, "open_site")) or (None, None)
+        print(f"  L={L:>2}  OBC={'n/a' if o[0] is None else f'{o[0]:.5f}'}  PBC={'n/a' if p[0] is None else f'{p[0]:.5f}'}")
+        continue
     o, so = combined[(L, "open_site")]; p, sp = combined[(L, "PBC")]
     d = o-p; e = math.sqrt(so**2+sp**2); sig = abs(d)/e
     print(f"  L={L:>2}  OBC={o:.5f}±{so:.4f}  PBC={p:.5f}±{sp:.4f}  diff={d:+.4f}±{e:.4f}  ({sig:.1f}σ)")

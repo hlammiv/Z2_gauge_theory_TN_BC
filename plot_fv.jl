@@ -1,7 +1,7 @@
 using CSV, DataFrames, CairoMakie
 
 # Read tight-DMRG CSV with σ.
-csv_path = "/home/hlamm/Desktop/QC/circuit_knitting/data/z2_gauge_theory/convergence_overlap_pzero_bg-1-1_m0p1_eta0p5_tight.csv"
+csv_path = joinpath(@__DIR__, "data", "z2_gauge_theory", "convergence_overlap_pzero_bg-1-1_m0p1_eta0p5_tight.csv")
 df = CSV.read(csv_path, DataFrame)
 
 # Filter to OBC :truncate_xz and PBC.
@@ -31,6 +31,6 @@ scatter!(ax, pbc.L, pbc.gap_argmax; color = :red, marker = :rect,
 axislegend(ax; position = :rb)
 
 # Save both PDF and PNG
-save("/home/hlamm/Desktop/QC/circuit_knitting/data/fv_convergence_m0p1_eta0p5.pdf", fig)
-save("/home/hlamm/Desktop/QC/circuit_knitting/data/fv_convergence_m0p1_eta0p5.png", fig)
+save(joinpath(@__DIR__, "data", "fv_convergence_m0p1_eta0p5.pdf"), fig)
+save(joinpath(@__DIR__, "data", "fv_convergence_m0p1_eta0p5.png"), fig)
 println("Saved plot to data/fv_convergence_m0p1_eta0p5.{pdf,png}")

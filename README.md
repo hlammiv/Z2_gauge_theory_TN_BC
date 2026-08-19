@@ -54,6 +54,18 @@ diagonalisation at small L.
 - `plot_fv.py`, `plot_fv_seeds.py`, `plot_fv.jl` — older variants kept for
   reference.
 
+All plotting scripts resolve `data/` relative to this repository rather than
+using a machine-specific absolute path.
+
+### Provisional final-results analysis
+
+The local `work/final-results` branch contains exploratory L=18 and L=24
+analysis. In `plot_fv_patched.py`, the displayed PBC values at those volumes
+can be replaced by a lower-volume plateau estimate while the measured points
+are retained in gray. These substitutions are provisional presentation
+choices, not additional measurements, and must be compared against a
+measured-values-only analysis before any result is promoted to the paper.
+
 ## Reproducing a single run
 
 ```bash

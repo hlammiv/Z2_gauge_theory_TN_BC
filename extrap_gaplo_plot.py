@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy.optimize import curve_fit
 
-DATA = Path("/home/hlamm/Desktop/QC/circuit_knitting/data")
+DATA = Path(__file__).resolve().parent / "data"
 KMAX = 30
 BAND_CUT = 2.0
 

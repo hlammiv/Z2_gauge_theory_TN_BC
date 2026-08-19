@@ -7,7 +7,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-DATA = Path("/home/hlamm/Desktop/QC/circuit_knitting/data")
+DATA = Path(__file__).resolve().parent / "data"
 
 CODES = {
     "z2-gauge": (DATA / "z2_gauge_theory",

@@ -16,6 +16,14 @@ lit/
 qc_boundary_extracted/
 *.zip
 
+# Generated publication and diagnostic outputs
+*.aux
+*.bbl
+*.blg
+*.out
+*Notes.bib
+wrapper.pdf
+
 # OS / temp
 *~
 __pycache__/

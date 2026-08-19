@@ -35,7 +35,7 @@ EMPIRICAL_DRIFT_UP = {
     16: {"OBC": 0.0061,  "PBC": 0.0075},
 }
 
-DATA = Path("/home/hlamm/Desktop/QC/circuit_knitting/data")
+DATA = Path(__file__).resolve().parent / "data"
 
 # Production single-seed CSV paths
 PROD = {
