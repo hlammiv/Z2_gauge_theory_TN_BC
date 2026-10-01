@@ -495,12 +495,21 @@ def band_envelope(results, obs, sizes, with_limit):
     return low, high
 
 
-def make_figure(data, results, path):
+def make_figure(data, results, path, scaled=True):
+    """Draw the paper figure: three panels sharing the 1/N_s axis.
+
+    Top and middle show the weighted gap and the summed weight for both
+    boundary conditions.  The bottom panel shows the OBC-PBC difference of
+    both: scaled=True multiplies it by N_s, so that the intercept is the
+    1/N_s coefficient; scaled=False shows the plain difference, which goes to
+    zero at infinite volume.  Color encodes the boundary condition throughout
+    (vermillion PBC, blue OBC).
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    blue, vermillion, green = "#0072B2", "#D55E00", "#009E73"
+    blue, vermillion = "#0072B2", "#D55E00"
     plt.rcParams.update({
         "text.usetex": True, "font.family": "serif", "font.serif": ["Latin Modern Roman"],
         "text.latex.preamble": r"\usepackage{lmodern}\usepackage{amsmath}",
@@ -510,70 +519,87 @@ def make_figure(data, results, path):
     })
     sizes = np.array(fv_data.SIZES, float)
     inverse = 1.0 / sizes
-    # Both panels share the 1/N_s axis, so the infinite-volume limit is the
+    # All panels share the 1/N_s axis, so the infinite-volume limit is the
     # left edge of each.  N_s itself is labelled along the top.
-    fig, (top, bottom) = plt.subplots(2, 1, figsize=(6.4, 8.4), sharex=True,
-                                      gridspec_kw={"height_ratios": [1.1, 1], "hspace": 0.06})
+    fig, (top, middle, bottom) = plt.subplots(
+        3, 1, figsize=(6.4, 8.4), sharex=True,
+        gridspec_kw={"height_ratios": [1, 1, 1], "hspace": 0.07})
 
-    # Top: the weighted gap itself for both boundary conditions.
-    ref = reference(data, "Dbar")[0]
-    top.axhline(ref, color=vermillion, linewidth=1.0, linestyle="--", zorder=1)
-    best = preferred(results, "Dbar")
-    fitted = (sizes >= best["n_min"]) & (sizes < HELD_OUT)
-    grid_inv = np.linspace(0.0, 1.0 / best["n_min"], 400)[1:]
-    low, high = band_envelope(results, "Dbar", 1.0 / grid_inv, with_limit=True)
-    top.fill_between(grid_inv, low, high, color=blue, alpha=0.3, linewidth=0)
-    top.plot(grid_inv, best["predict"](1.0 / grid_inv)[0], color=blue, linewidth=1.2, zorder=2)
-    for boundary, color, marker, label in (("PBC", vermillion, "s", "PBC"),
-                                           ("open_site", blue, "o", "OBC")):
-        y = np.array([data[(int(n), boundary)]["Dbar"] for n in sizes])
-        e = np.array([data[(int(n), boundary)]["Dbar_err"] for n in sizes])
-        offset = 0.0015 if boundary == "PBC" else -0.0015
-        top.errorbar(inverse[fitted] + offset, y[fitted], yerr=e[fitted], fmt=marker,
-                     color=color, markersize=6.5, label=label, zorder=4)
-        top.errorbar(inverse[~fitted] + offset, y[~fitted], yerr=e[~fitted], fmt=marker,
-                     color=color, markersize=6.5, mfc="white", mew=1.3, zorder=4)
-    top.set_ylabel(r"$\overline{\Delta}$")
-    top.set_ylim(1.405, 1.482)
-    top.legend(loc="lower left", frameon=False)
-    top.grid(alpha=0.15)
+    def draw_observable(axis, obs, ylabel, ylim, legend_loc):
+        """One observable for both boundary conditions, with the OBC fit."""
+        ref = reference(data, obs)[0]
+        axis.axhline(ref, color=vermillion, linewidth=1.0, linestyle="--", zorder=1)
+        best = preferred(results, obs)
+        grid_inv = np.linspace(0.0, 1.0 / best["n_min"], 400)[1:]
+        low, high = band_envelope(results, obs, 1.0 / grid_inv, with_limit=True)
+        axis.fill_between(grid_inv, low, high, color=blue, alpha=0.3, linewidth=0)
+        axis.plot(grid_inv, best["predict"](1.0 / grid_inv)[0], color=blue, linewidth=1.2,
+                  zorder=2)
+        # Filled: used in the OBC fit (all measured PBC points except the
+        # held-out size are filled).
+        masks = {"PBC": sizes < HELD_OUT,
+                 "open_site": (sizes >= best["n_min"]) & (sizes < HELD_OUT)}
+        for boundary, color, marker, label, offset in (
+                ("PBC", vermillion, "s", "PBC", 0.0015),
+                ("open_site", blue, "o", "OBC", -0.0015)):
+            y = np.array([data[(int(n), boundary)][obs] for n in sizes])
+            e = np.array([data[(int(n), boundary)][f"{obs}_err"] for n in sizes])
+            filled = masks[boundary]
+            axis.errorbar(inverse[filled] + offset, y[filled], yerr=e[filled], fmt=marker,
+                          color=color, markersize=6.5, label=label, zorder=4)
+            axis.errorbar(inverse[~filled] + offset, y[~filled], yerr=e[~filled], fmt=marker,
+                          color=color, markersize=6.5, mfc="white", mew=1.3, zorder=4)
+        axis.set_ylabel(ylabel)
+        axis.set_ylim(*ylim)
+        axis.grid(alpha=0.15)
+        if legend_loc:
+            axis.legend(loc=legend_loc, frameon=False)
+
+    draw_observable(top, "Dbar", r"$\overline{\Delta}$", (1.405, 1.482), "lower left")
+    draw_observable(middle, "W", r"$W$", (0.658, 0.724), None)
     size_axis = top.secondary_xaxis("top")
     labelled = (4, 6, 8, 10, 12, 16, 24)
     size_axis.set_xticks([0.0] + [1.0 / n for n in labelled])
     size_axis.set_xticklabels([r"$\infty$"] + [str(n) for n in labelled])
     size_axis.set_xlabel(r"$N_s$")
 
-    # Bottom: N_s times the OBC-PBC difference against 1/N_s, both observables
-    # on one axis.  A leading 1/N_s correction gives a nonzero intercept.
+    # Bottom: the OBC-PBC difference of both observables on one axis.  Both
+    # are open-boundary results, so both are blue; the marker tells them apart.
     # W is drawn first so that the gap point at N_s = 4, which nearly coincides
     # with the W point there, stays visible on top of it.
-    for obs, sign, color, marker, label, layer in (
-            ("W", 1.0, green, "D", r"$y=W$", 3),
-            ("Dbar", -1.0, blue, "o", r"$y=\overline{\Delta}$", 5)):
+    for obs, sign, marker, label, layer in (("W", 1.0, "D", r"$y=W$", 3),
+                                            ("Dbar", -1.0, "o", r"$y=\overline{\Delta}$", 5)):
         ref = reference(data, obs)[0]
         y = np.array([data[(int(n), "open_site")][obs] for n in sizes])
         e = np.array([data[(int(n), "open_site")][f"{obs}_err"] for n in sizes])
-        scaled, scaled_err = sign * sizes * (y - ref), sizes * e
+        factor = sizes if scaled else np.ones_like(sizes)
+        values, errors = sign * factor * (y - ref), factor * e
         best = preferred(results, obs)
         fitted = (sizes >= best["n_min"]) & (sizes < HELD_OUT)
         # Curve and band are drawn only where the fit applies, N_s >= N_min.
         grid_inv = np.linspace(0.0, 1.0 / best["n_min"], 400)[1:]
+        grid_factor = 1.0 / grid_inv if scaled else 1.0
         low, high = band_envelope(results, obs, 1.0 / grid_inv, with_limit=False)
-        edges = np.sort(np.vstack([sign * low / grid_inv, sign * high / grid_inv]), axis=0)
-        bottom.fill_between(grid_inv, edges[0], edges[1], color=color, alpha=0.3, linewidth=0)
+        edges = np.sort(np.vstack([sign * low * grid_factor, sign * high * grid_factor]), axis=0)
+        bottom.fill_between(grid_inv, edges[0], edges[1], color=blue, alpha=0.3, linewidth=0)
         series, _ = best["predict"](1.0 / grid_inv, with_limit=False)
-        bottom.plot(grid_inv, sign * series / grid_inv, color=color, linewidth=1.2, zorder=2)
-        bottom.errorbar(inverse[fitted], scaled[fitted], yerr=scaled_err[fitted], fmt=marker,
-                        color=color, markersize=6, label=label, zorder=layer + 1)
-        bottom.errorbar(inverse[~fitted], scaled[~fitted], yerr=scaled_err[~fitted],
-                        fmt=marker, color=color, markersize=8 if obs == "W" else 6,
-                        mfc="white", mew=1.3, zorder=layer)
+        bottom.plot(grid_inv, sign * series * grid_factor, color=blue, linewidth=1.2, zorder=2)
+        bottom.errorbar(inverse[fitted], values[fitted], yerr=errors[fitted], fmt=marker,
+                        color=blue, markersize=6, label=label, zorder=layer + 1)
+        bottom.errorbar(inverse[~fitted], values[~fitted], yerr=errors[~fitted], fmt=marker,
+                        color=blue, markersize=8 if obs == "W" else 6, mfc="white", mew=1.3,
+                        zorder=layer)
     bottom.set_xlabel(r"$1/N_s$")
-    bottom.set_ylabel(r"$N_s\,|y_{\rm OBC}-y_\infty|$")
     bottom.set_xlim(0.0, 0.26)
-    bottom.set_ylim(0.09, 0.27)
+    if scaled:
+        bottom.set_ylabel(r"$N_s\,|y_{\rm OBC}-y_\infty|$")
+        bottom.set_ylim(0.09, 0.27)
+    else:
+        bottom.set_ylabel(r"$|y_{\rm OBC}-y_\infty|$")
+        bottom.set_ylim(0.0, 0.058)
     handles, labels = bottom.get_legend_handles_labels()
-    bottom.legend(handles[::-1], labels[::-1], loc="lower right", frameon=False)
+    bottom.legend(handles[::-1], labels[::-1], frameon=False,
+                  loc="lower right" if scaled else "upper left")
     bottom.grid(alpha=0.15)
 
     fig.savefig(path)
