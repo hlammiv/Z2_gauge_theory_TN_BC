@@ -422,6 +422,16 @@ def summary_dict(data, results):
     out["relative_shift_percent"] = {
         fv_data.LABEL[b]: {str(n): 100 * (data[(n, b)]["Dbar"] - ref) / ref
                            for n in fv_data.SIZES} for b in fv_data.BOUNDARIES}
+    # Spread of the leading coefficient b over the fits that define the band.
+    out["band"] = {}
+    for obs in OBSERVABLES:
+        members = band_fits(results, obs)
+        out["band"][obs] = {
+            "members": [{"model": m["model"], "n_min": m["n_min"],
+                         "b": float(m["params"][1]), "b_err": float(m["errors"][1])}
+                        for m in members],
+            "b_low": float(min(m["params"][1] - m["errors"][1] for m in members)),
+            "b_high": float(max(m["params"][1] + m["errors"][1] for m in members))}
     out["obc_size_for_accuracy"] = {}
     for target in (0.01, 0.001):
         n = 4
@@ -447,91 +457,133 @@ def summary_dict(data, results):
     return out
 
 
+def band_fits(results, obs):
+    """Fits whose spread defines the plotted uncertainty band.
+
+    The preferred series, the series one order lower at the smallest N_min
+    where it is acceptable, and the preferred order with the next N_min.  The
+    band is the envelope of their one-sigma ranges, so it shows the effect of
+    truncating the series and of the choice of N_min as well as the fit
+    uncertainty.
+    """
+    best = preferred(results, obs)
+    members = [best]
+    order = SERIES_WITH_1_OVER_N.index(best["model"])
+    if order > 0:
+        lower = smallest_acceptable(results, obs, "common", SERIES_WITH_1_OVER_N[order - 1])
+        if lower is not None:
+            members.append(lower)
+    later = select(results, obs, "common", best["model"], best["n_min"] + 2)
+    if later is not None and later["p"] >= P_ACCEPT:
+        members.append(later)
+    return members
+
+
+def band_envelope(results, obs, sizes, with_limit):
+    """(low, high) envelope of the one-sigma ranges of band_fits at sizes.
+
+    Each fit contributes only at sizes it describes, N_s >= its N_min.
+    """
+    sizes = np.asarray(sizes, float)
+    low = np.full(sizes.shape, np.inf)
+    high = np.full(sizes.shape, -np.inf)
+    for member in band_fits(results, obs):
+        value, sigma = member["predict"](sizes, with_limit=with_limit)
+        valid = sizes >= member["n_min"]
+        low = np.where(valid, np.minimum(low, value - sigma), low)
+        high = np.where(valid, np.maximum(high, value + sigma), high)
+    return low, high
+
+
 def make_figure(data, results, path):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
-    blue, vermillion, green, black = "#0072B2", "#D55E00", "#009E73", "#000000"
+    blue, vermillion, green = "#0072B2", "#D55E00", "#009E73"
     plt.rcParams.update({
         "text.usetex": True, "font.family": "serif", "font.serif": ["Latin Modern Roman"],
         "text.latex.preamble": r"\usepackage{lmodern}\usepackage{amsmath}",
-        "font.size": 16, "axes.labelsize": 19, "legend.fontsize": 15,
-        "xtick.labelsize": 15, "ytick.labelsize": 15, "axes.linewidth": 0.8,
+        "font.size": 17, "axes.labelsize": 20, "legend.fontsize": 16,
+        "xtick.labelsize": 16, "ytick.labelsize": 16, "axes.linewidth": 0.8,
         "errorbar.capsize": 2.5, "savefig.bbox": "tight", "savefig.pad_inches": 0.04,
     })
     sizes = np.array(fv_data.SIZES, float)
-    fitted = sizes < HELD_OUT
-    fig, (top, bottom) = plt.subplots(2, 1, figsize=(6.4, 8.2),
-                                      gridspec_kw={"height_ratios": [1.15, 1]})
+    # Three panels side by side, for a full-width (two-column) figure.
+    fig, (top, middle, bottom) = plt.subplots(
+        1, 3, figsize=(15.0, 4.6), gridspec_kw={"width_ratios": [1.15, 1, 1], "wspace": 0.33})
 
-    # Top: the weighted gap itself for both boundary conditions.
+    # Left: the weighted gap itself for both boundary conditions.
     ref = reference(data, "Dbar")[0]
     top.axhline(ref, color=vermillion, linewidth=1.0, linestyle="--", zorder=1)
     best = preferred(results, "Dbar")
+    fitted = (sizes >= best["n_min"]) & (sizes < HELD_OUT)
     grid = np.linspace(best["n_min"], 25.5, 300)
-    curve, band = best["predict"](grid)
-    top.fill_between(grid, curve - band, curve + band, color=blue, alpha=0.2, linewidth=0)
-    top.plot(grid, curve, color=blue, linewidth=1.3, zorder=2)
+    low, high = band_envelope(results, "Dbar", grid, with_limit=True)
+    top.fill_between(grid, low, high, color=blue, alpha=0.3, linewidth=0)
+    top.plot(grid, best["predict"](grid)[0], color=blue, linewidth=1.2, zorder=2)
     for boundary, color, marker, label in (("PBC", vermillion, "s", "PBC"),
                                            ("open_site", blue, "o", "OBC")):
         y = np.array([data[(int(n), boundary)]["Dbar"] for n in sizes])
         e = np.array([data[(int(n), boundary)]["Dbar_err"] for n in sizes])
         offset = 0.15 if boundary == "PBC" else -0.15
         top.errorbar(sizes[fitted] + offset, y[fitted], yerr=e[fitted], fmt=marker,
-                     color=color, markersize=6.5, label=label, zorder=4)
+                     color=color, markersize=6, label=label, zorder=4)
         top.errorbar(sizes[~fitted] + offset, y[~fitted], yerr=e[~fitted], fmt=marker,
-                     color=color, markersize=6.5, mfc="white", mew=1.3, zorder=4)
+                     color=color, markersize=6, mfc="white", mew=1.3, zorder=4)
     top.set_xlabel(r"$N_s$")
     top.set_ylabel(r"$\overline{\Delta}$")
-    top.set_xticks(fv_data.SIZES)
+    top.set_xticks((4, 8, 12, 16, 20, 24))
     top.set_xlim(3, 25.5)
     top.set_ylim(1.405, 1.482)
     top.legend(loc="lower right", frameon=False)
     top.grid(alpha=0.15)
 
-    # Bottom: N_s times the OBC-PBC difference against 1/N_s.  A leading 1/N_s
-    # correction gives a nonzero intercept; any faster fall-off goes to zero.
-    from matplotlib.lines import Line2D
+    # Middle and right: N_s times the OBC-PBC difference against 1/N_s, one
+    # panel per observable.  A leading 1/N_s correction gives a nonzero
+    # intercept; any faster fall-off heads to zero.
     inverse = 1.0 / sizes
-    grid_inv = np.linspace(0.0, 0.26, 400)[1:]
-    handles = []
-    for obs, sign, color, marker, label in (
-            ("Dbar", -1.0, blue, "o",
-             r"$N_s\,\big(\overline{\Delta}_{\rm PBC}-\overline{\Delta}_{\rm OBC}\big)$"),
-            ("W", 1.0, green, "D", r"$N_s\,\big(W_{\rm OBC}-W_{\rm PBC}\big)$")):
+    panels = (
+        (middle, "Dbar", -1.0, blue, "o",
+         r"$N_s\,(\overline{\Delta}_{\infty}-\overline{\Delta}_{\rm OBC})$", (0.13, 0.24)),
+        (bottom, "W", 1.0, green, "D", r"$N_s\,(W_{\rm OBC}-W_{\infty})$", (0.148, 0.222)),
+    )
+    for axis, obs, sign, color, marker, label, ylim in panels:
         ref = reference(data, obs)[0]
         y = np.array([data[(int(n), "open_site")][obs] for n in sizes])
         e = np.array([data[(int(n), "open_site")][f"{obs}_err"] for n in sizes])
         scaled, scaled_err = sign * sizes * (y - ref), sizes * e
         best = preferred(results, obs)
-        series, band = best["predict"](1.0 / grid_inv, with_limit=False)
-        bottom.fill_between(grid_inv, (sign * series - band) / grid_inv,
-                            (sign * series + band) / grid_inv, color=color, alpha=0.2,
-                            linewidth=0)
-        bottom.plot(grid_inv, sign * series / grid_inv, color=color, linewidth=1.3, zorder=2)
-        # Best three-parameter series that has no 1/N_s term, same data.
+        fitted = (sizes >= best["n_min"]) & (sizes < HELD_OUT)
+        # Curves are drawn only where the fit applies, N_s >= N_min.
+        grid_inv = np.linspace(0.0, 1.0 / best["n_min"], 400)[1:]
+        low, high = band_envelope(results, obs, 1.0 / grid_inv, with_limit=False)
+        edges = np.sort(np.vstack([sign * low / grid_inv, sign * high / grid_inv]), axis=0)
+        axis.fill_between(grid_inv, edges[0], edges[1], color=color, alpha=0.3, linewidth=0)
+        series, _ = best["predict"](1.0 / grid_inv, with_limit=False)
+        axis.plot(grid_inv, sign * series / grid_inv, color=color, linewidth=1.2, zorder=2)
+        # Best-fit three-parameter series that has no 1/N_s term.
         rival = select(results, obs, "common", "Q3", 6)
-        series, _ = rival["predict"](1.0 / grid_inv, with_limit=False)
-        bottom.plot(grid_inv, sign * series / grid_inv, color=color, linewidth=1.1,
-                    linestyle=(0, (4, 2)), zorder=2)
-        bottom.errorbar(inverse[fitted], scaled[fitted], yerr=scaled_err[fitted], fmt=marker,
-                        color=color, markersize=6, zorder=4)
-        bottom.errorbar(inverse[~fitted], scaled[~fitted], yerr=scaled_err[~fitted],
-                        fmt=marker, color=color, markersize=6, mfc="white", mew=1.3, zorder=4)
-        handles.append(Line2D([], [], color=color, marker=marker, markersize=6,
-                              linestyle="none", label=label))
-    handles += [Line2D([], [], color="0.35", linewidth=1.3, label=r"series from $1/N_s$"),
-                Line2D([], [], color="0.35", linewidth=1.1, linestyle=(0, (4, 2)),
-                       label=r"series from $1/N_s^2$")]
+        rival_inv = np.linspace(0.0, 1.0 / rival["n_min"], 400)[1:]
+        series, _ = rival["predict"](1.0 / rival_inv, with_limit=False)
+        axis.plot(rival_inv, sign * series / rival_inv, color=color, linewidth=1.1,
+                  linestyle=(0, (4, 2)), zorder=2)
+        axis.errorbar(inverse[fitted], scaled[fitted], yerr=scaled_err[fitted], fmt=marker,
+                      color=color, markersize=6, zorder=4)
+        axis.errorbar(inverse[~fitted], scaled[~fitted], yerr=scaled_err[~fitted],
+                      fmt=marker, color=color, markersize=6, mfc="white", mew=1.3, zorder=4)
+        axis.set_ylabel(label)
+        axis.set_xlim(0.0, 0.26)
+        axis.set_ylim(*ylim)
+        axis.grid(alpha=0.15)
+    middle.set_xlabel(r"$1/N_s$")
     bottom.set_xlabel(r"$1/N_s$")
-    bottom.set_ylabel(r"$N_s\times$ (OBC$-$PBC difference)")
-    bottom.set_xlim(0.0, 0.26)
-    bottom.set_ylim(0.0, 0.275)
-    bottom.legend(handles=handles, loc="lower right", frameon=False, ncol=1)
-    bottom.grid(alpha=0.15)
+    handles = [Line2D([], [], color="0.35", linewidth=1.2, label=r"series from $1/N_s$"),
+               Line2D([], [], color="0.35", linewidth=1.1, linestyle=(0, (4, 2)),
+                      label=r"series from $1/N_s^2$")]
+    bottom.legend(handles=handles, loc="upper left", frameon=False)
 
-    fig.tight_layout()
     fig.savefig(path)
     fig.savefig(path.with_suffix(".png"), dpi=200)
     plt.close(fig)
