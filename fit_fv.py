@@ -306,8 +306,8 @@ def write_data_table(data, path):
               r"and open boundary conditions at $(m_0,\eta)=(0.1,0.5)$.  Uncertainties on "
               r"$\overline{\Delta}$ are dominated by bounds from the energy variance of the "
               r"DMRG states and by the change in the last refinement stage, and are not "
-              r"statistical; those on $W$ combine the scatter among runs, the difference "
-              r"between the two codes, and the change in the last refinement stage.  "
+              r"statistical; those on $W$ combine the scatter among starting states, the difference "
+              r"between the two implementations, and the change in the last refinement stage.  "
               r"The starred size is not used in any fit.}",
               r"\label{tab:fv-data}", r"\end{table*}"]
     path.write_text("\n".join(lines) + "\n")
@@ -350,7 +350,7 @@ def write_fit_table(results, path):
               r"rejected at the 5\% level (a dash means it is rejected for every "
               r"$N_{\min}\le 12$); and the pull is the deviation of the measured $N_s=24$ "
               r"value from the prediction of that fit, in units of the combined uncertainty.  "
-              r"In the last row the rate is fixed to the meson mass.}",
+              r"In the last row the rate is fixed to the meson gap $M=\\overline{\\Delta}_\\infty$.}",
               r"\label{tab:fv-fits}", r"\end{table*}"]
     path.write_text("\n".join(lines) + "\n")
 
@@ -428,6 +428,13 @@ def summary_dict(data, results):
         while abs(best["predict"](n, with_limit=False)[0][0]) / ref > target:
             n += 2
         out["obc_size_for_accuracy"][str(target)] = n
+    # Highest level of the OBC band: an individual level converges faster
+    # (as 1/N_s^2) than the volume-averaged moments.
+    out["obc_top_level"] = {
+        str(n): {"gap": data[(n, "open_site")]["top_level"],
+                 "n2_times_shift": n ** 2 * (data[(n, "open_site")]["top_level"] - ref),
+                 "shift_percent": 100 * (data[(n, "open_site")]["top_level"] - ref) / ref}
+        for n in fv_data.SIZES}
     for r in results:
         out["fits"].append({
             "obs": r["obs"], "limit": r["limit"], "model": r["model"], "n_min": r["n_min"],

@@ -74,14 +74,15 @@ CLAUDE = {
 def moments(row):
     """Band-restricted moments of one CSV row.
 
-    Returns (Dbar, W, sigma_Dbar, n_states).  sigma_Dbar propagates the
+    Returns (Dbar, W, sigma_Dbar, n_states, top), where top is the gap of the
+    highest state in the band.  sigma_Dbar propagates the
     per-state energy standard deviations sigma_n = sqrt(<H^2> - <H>^2), each of
     which bounds the distance of E_n from an exact eigenvalue.
     """
     n_states = 0
     while f"gap_k{n_states + 1}" in row:
         n_states += 1
-    num = den = var = 0.0
+    num = den = var = top = 0.0
     for n in range(1, n_states + 1):
         gap = float(row[f"gap_k{n}"])
         weight = float(row[f"overlap_k{n}"])
@@ -90,9 +91,11 @@ def moments(row):
             num += weight * gap
             den += weight
             var += (weight * sigma) ** 2
+        if gap < DELTA_CUT:
+            top = max(top, gap)
     if den <= 0:
         return None
-    return num / den, den, math.sqrt(var) / den, n_states
+    return num / den, den, math.sqrt(var) / den, n_states, top
 
 
 def _is_selected(row, size, boundary):
@@ -115,6 +118,7 @@ def load_runs(directory, pattern, size, boundary):
                     runs.append({"seed": int(match.group(1)) if match else 0,
                                  "Dbar": result[0], "W": result[1],
                                  "sigma_var": result[2], "n_states": result[3],
+                                 "top": result[4],
                                  "file": path.name})
     return runs
 
@@ -144,6 +148,7 @@ def summarize(runs):
         # it is not reduced by averaging.
         "Dbar_var": _mean([r["sigma_var"] for r in runs]),
         "W": _mean(weight),
+        "top_level": _mean([r["top"] for r in runs]),
         "W_seed_sem": _std(weight) / math.sqrt(n),
     }
 
