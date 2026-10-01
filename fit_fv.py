@@ -499,22 +499,20 @@ def make_figure(data, results, path):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.lines import Line2D
 
     blue, vermillion, green = "#0072B2", "#D55E00", "#009E73"
     plt.rcParams.update({
         "text.usetex": True, "font.family": "serif", "font.serif": ["Latin Modern Roman"],
         "text.latex.preamble": r"\usepackage{lmodern}\usepackage{amsmath}",
-        "font.size": 17, "axes.labelsize": 20, "legend.fontsize": 16,
-        "xtick.labelsize": 16, "ytick.labelsize": 16, "axes.linewidth": 0.8,
+        "font.size": 16, "axes.labelsize": 19, "legend.fontsize": 16,
+        "xtick.labelsize": 15, "ytick.labelsize": 15, "axes.linewidth": 0.8,
         "errorbar.capsize": 2.5, "savefig.bbox": "tight", "savefig.pad_inches": 0.04,
     })
     sizes = np.array(fv_data.SIZES, float)
-    # Three panels side by side, for a full-width (two-column) figure.
-    fig, (top, middle, bottom) = plt.subplots(
-        1, 3, figsize=(15.0, 4.6), gridspec_kw={"width_ratios": [1.15, 1, 1], "wspace": 0.33})
+    fig, (top, bottom) = plt.subplots(2, 1, figsize=(6.4, 8.2),
+                                      gridspec_kw={"height_ratios": [1.1, 1]})
 
-    # Left: the weighted gap itself for both boundary conditions.
+    # Top: the weighted gap itself for both boundary conditions.
     ref = reference(data, "Dbar")[0]
     top.axhline(ref, color=vermillion, linewidth=1.0, linestyle="--", zorder=1)
     best = preferred(results, "Dbar")
@@ -529,61 +527,52 @@ def make_figure(data, results, path):
         e = np.array([data[(int(n), boundary)]["Dbar_err"] for n in sizes])
         offset = 0.15 if boundary == "PBC" else -0.15
         top.errorbar(sizes[fitted] + offset, y[fitted], yerr=e[fitted], fmt=marker,
-                     color=color, markersize=6, label=label, zorder=4)
+                     color=color, markersize=6.5, label=label, zorder=4)
         top.errorbar(sizes[~fitted] + offset, y[~fitted], yerr=e[~fitted], fmt=marker,
-                     color=color, markersize=6, mfc="white", mew=1.3, zorder=4)
+                     color=color, markersize=6.5, mfc="white", mew=1.3, zorder=4)
     top.set_xlabel(r"$N_s$")
     top.set_ylabel(r"$\overline{\Delta}$")
-    top.set_xticks((4, 8, 12, 16, 20, 24))
+    top.set_xticks(fv_data.SIZES)
     top.set_xlim(3, 25.5)
     top.set_ylim(1.405, 1.482)
     top.legend(loc="lower right", frameon=False)
     top.grid(alpha=0.15)
 
-    # Middle and right: N_s times the OBC-PBC difference against 1/N_s, one
-    # panel per observable.  A leading 1/N_s correction gives a nonzero
-    # intercept; any faster fall-off heads to zero.
+    # Bottom: N_s times the OBC-PBC difference against 1/N_s, both observables
+    # on one axis.  A leading 1/N_s correction gives a nonzero intercept.
     inverse = 1.0 / sizes
-    panels = (
-        (middle, "Dbar", -1.0, blue, "o",
-         r"$N_s\,(\overline{\Delta}_{\infty}-\overline{\Delta}_{\rm OBC})$", (0.13, 0.24)),
-        (bottom, "W", 1.0, green, "D", r"$N_s\,(W_{\rm OBC}-W_{\infty})$", (0.148, 0.222)),
-    )
-    for axis, obs, sign, color, marker, label, ylim in panels:
+    # W is drawn first so that the gap point at N_s = 4, which nearly coincides
+    # with the W point there, stays visible on top of it.
+    for obs, sign, color, marker, label, layer in (
+            ("W", 1.0, green, "D", r"$y=W$", 3),
+            ("Dbar", -1.0, blue, "o", r"$y=\overline{\Delta}$", 5)):
         ref = reference(data, obs)[0]
         y = np.array([data[(int(n), "open_site")][obs] for n in sizes])
         e = np.array([data[(int(n), "open_site")][f"{obs}_err"] for n in sizes])
         scaled, scaled_err = sign * sizes * (y - ref), sizes * e
         best = preferred(results, obs)
         fitted = (sizes >= best["n_min"]) & (sizes < HELD_OUT)
-        # Curves are drawn only where the fit applies, N_s >= N_min.
+        # Curve and band are drawn only where the fit applies, N_s >= N_min.
         grid_inv = np.linspace(0.0, 1.0 / best["n_min"], 400)[1:]
         low, high = band_envelope(results, obs, 1.0 / grid_inv, with_limit=False)
         edges = np.sort(np.vstack([sign * low / grid_inv, sign * high / grid_inv]), axis=0)
-        axis.fill_between(grid_inv, edges[0], edges[1], color=color, alpha=0.3, linewidth=0)
+        bottom.fill_between(grid_inv, edges[0], edges[1], color=color, alpha=0.3, linewidth=0)
         series, _ = best["predict"](1.0 / grid_inv, with_limit=False)
-        axis.plot(grid_inv, sign * series / grid_inv, color=color, linewidth=1.2, zorder=2)
-        # Best-fit three-parameter series that has no 1/N_s term.
-        rival = select(results, obs, "common", "Q3", 6)
-        rival_inv = np.linspace(0.0, 1.0 / rival["n_min"], 400)[1:]
-        series, _ = rival["predict"](1.0 / rival_inv, with_limit=False)
-        axis.plot(rival_inv, sign * series / rival_inv, color=color, linewidth=1.1,
-                  linestyle=(0, (4, 2)), zorder=2)
-        axis.errorbar(inverse[fitted], scaled[fitted], yerr=scaled_err[fitted], fmt=marker,
-                      color=color, markersize=6, zorder=4)
-        axis.errorbar(inverse[~fitted], scaled[~fitted], yerr=scaled_err[~fitted],
-                      fmt=marker, color=color, markersize=6, mfc="white", mew=1.3, zorder=4)
-        axis.set_ylabel(label)
-        axis.set_xlim(0.0, 0.26)
-        axis.set_ylim(*ylim)
-        axis.grid(alpha=0.15)
-    middle.set_xlabel(r"$1/N_s$")
+        bottom.plot(grid_inv, sign * series / grid_inv, color=color, linewidth=1.2, zorder=2)
+        bottom.errorbar(inverse[fitted], scaled[fitted], yerr=scaled_err[fitted], fmt=marker,
+                        color=color, markersize=6, label=label, zorder=layer + 1)
+        bottom.errorbar(inverse[~fitted], scaled[~fitted], yerr=scaled_err[~fitted],
+                        fmt=marker, color=color, markersize=8 if obs == "W" else 6,
+                        mfc="white", mew=1.3, zorder=layer)
     bottom.set_xlabel(r"$1/N_s$")
-    handles = [Line2D([], [], color="0.35", linewidth=1.2, label=r"series from $1/N_s$"),
-               Line2D([], [], color="0.35", linewidth=1.1, linestyle=(0, (4, 2)),
-                      label=r"series from $1/N_s^2$")]
-    bottom.legend(handles=handles, loc="upper left", frameon=False)
+    bottom.set_ylabel(r"$N_s\,|y_{\rm OBC}-y_\infty|$")
+    bottom.set_xlim(0.0, 0.26)
+    bottom.set_ylim(0.09, 0.27)
+    handles, labels = bottom.get_legend_handles_labels()
+    bottom.legend(handles[::-1], labels[::-1], loc="lower right", frameon=False)
+    bottom.grid(alpha=0.15)
 
+    fig.tight_layout()
     fig.savefig(path)
     fig.savefig(path.with_suffix(".png"), dpi=200)
     plt.close(fig)
