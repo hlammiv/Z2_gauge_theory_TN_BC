@@ -44,7 +44,37 @@ diagonalisation at small L.
   Conclusion: chunked-restart is ~1.8× faster per sweep despite using more
   sweeps to reach the same |ΔE| tolerance — hence its use in production.
 
-## Plotting
+## Paper analysis (Sec. III and App. A)
+
+These three files produce every finite-volume number, table and figure in the
+paper:
+
+- `exact_diag_small.jl` — exact diagonalisation at N_s = 4, 6 for PBC and for
+  OBC with each boundary-charge assignment.  Writes
+  `data/exact_diag/exact_moments.csv` (needed by `fv_data.py`).
+- `fv_data.py` — loads the most converged run for each (N_s, boundary) and
+  returns the two meson-band moments, the weighted gap and the summed weight,
+  with uncertainties built only from measured components (seed scatter, energy
+  variance, last-stage shift, difference between the two codes, deviation from
+  exact diagonalisation).  `python3 fv_data.py` prints the table.
+- `fit_fv.py` — tests which functional form describes the OBC approach to the
+  PBC value (series from 1/N_s, series from 1/N_s², single power,
+  exponential), with N_s = 24 held out.  Writes
+  `paper/generated/fv_fit_results.json`, the three `fv_*.tex` tables and
+  `paper/figures/fv_gaplo.pdf` in the `circuit_knitting` repository
+  (`--paper-dir` to change).
+- `test_fit_fv.py` — `python3 -m pytest test_fit_fv.py`.
+
+```bash
+julia --project=. exact_diag_small.jl   # once; about a minute
+python3 fit_fv.py
+```
+
+## Plotting (earlier analyses, superseded by `fit_fv.py`)
+
+- `plot_fv_gaplo_publication.py` — previous paper figure: two-code average,
+  hand-set 0.003 error floor, plateau substitution for PBC at L = 18, 24, and an
+  AIC*-weighted average over five fit forms.
 
 - `plot_fv_combined.py`     — production figure: ̄M(L) for OBC and PBC, plus
   OBC−PBC vs L with 5 extrapolation fits (1/L, 1/L², 1/L+1/L², 1/L^β,
@@ -57,14 +87,12 @@ diagonalisation at small L.
 All plotting scripts resolve `data/` relative to this repository rather than
 using a machine-specific absolute path.
 
-### Provisional final-results analysis
+### Plateau substitution in the earlier scripts
 
-The local `work/final-results` branch contains exploratory L=18 and L=24
-analysis. In `plot_fv_patched.py`, the displayed PBC values at those volumes
-can be replaced by a lower-volume plateau estimate while the measured points
-are retained in gray. These substitutions are provisional presentation
-choices, not additional measurements, and must be compared against a
-measured-values-only analysis before any result is promoted to the paper.
+In `plot_fv_patched.py` and `plot_fv_gaplo_publication.py` the displayed PBC
+values at L=18 and L=24 can be replaced by a lower-volume plateau estimate.
+These substitutions are presentation choices, not measurements.  The paper
+analysis in `fit_fv.py` does not use them: it uses measured values only.
 
 ## Reproducing a single run
 

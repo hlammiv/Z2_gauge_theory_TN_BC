@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Combine production single-seed (L=4..10) with 4-seed average (L=12,14)."""
+"""Earlier paper figure for the finite-volume study; superseded by fit_fv.py."""
 import csv, math
 from pathlib import Path
 import numpy as np
@@ -532,7 +532,7 @@ for label, fn, p0, color, bounds in fit_specs:
 ax2.set_xlim(3.5, 28.5)
 
 print()
-print("Extrapolation fits to L → ∞ (L ≥ 8 only):")
+print("Extrapolation fits to L → ∞ (L = 4..18; L = 24 held out):")
 print(f"  {'model':22s}  {'a∞':>10s}  {'σ_a':>10s}  {'χ²':>6s}  dof  {'p':>5s}    AIC     BIC")
 aic_min = min(s["aic"] for s in fit_summaries) if fit_summaries else 0
 bic_min = min(s["bic"] for s in fit_summaries) if fit_summaries else 0
@@ -550,8 +550,8 @@ for s in fit_summaries:
 # ------------------------------------------------------------------------
 N_MC = 2000
 rng = np.random.default_rng(20260525)
-# MC uses the same L<18 subset as the main fit (L=18 held out).
-_mc_idx    = [i for i, L in enumerate(Ls_diff) if L < 18]
+# MC uses the same subset as the main fit (L=24 held out).
+_mc_idx    = [i for i, L in enumerate(Ls_diff) if L < 24]
 fit_d_arr  = np.array([diffs[i]     for i in _mc_idx])
 fit_ep_arr = np.array([err_plus[i]  for i in _mc_idx])
 fit_em_arr = np.array([err_minus[i] for i in _mc_idx])
