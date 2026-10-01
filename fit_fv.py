@@ -502,14 +502,15 @@ def make_figure(data, results, path, scaled=True):
     boundary conditions.  The bottom panel shows the OBC-PBC difference of
     both: scaled=True multiplies it by N_s, so that the intercept is the
     1/N_s coefficient; scaled=False shows the plain difference, which goes to
-    zero at infinite volume.  Color encodes the boundary condition throughout
-    (vermillion PBC, blue OBC).
+    zero at infinite volume.  In the upper panels color and marker encode the
+    boundary condition (vermillion squares PBC, blue circles OBC); the bottom
+    panel compares the two observables and uses its own colors and markers.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    blue, vermillion = "#0072B2", "#D55E00"
+    blue, vermillion, green, purple = "#0072B2", "#D55E00", "#009E73", "#AA4499"
     plt.rcParams.update({
         "text.usetex": True, "font.family": "serif", "font.serif": ["Latin Modern Roman"],
         "text.latex.preamble": r"\usepackage{lmodern}\usepackage{amsmath}",
@@ -563,12 +564,13 @@ def make_figure(data, results, path, scaled=True):
     size_axis.set_xticklabels([r"$\infty$"] + [str(n) for n in labelled])
     size_axis.set_xlabel(r"$N_s$")
 
-    # Bottom: the OBC-PBC difference of both observables on one axis.  Both
-    # are open-boundary results, so both are blue; the marker tells them apart.
+    # Bottom: the OBC-PBC difference of both observables on one axis, in two
+    # colors and two marker shapes not used in the panels above.
     # W is drawn first so that the gap point at N_s = 4, which nearly coincides
     # with the W point there, stays visible on top of it.
-    for obs, sign, marker, label, layer in (("W", 1.0, "D", r"$y=W$", 3),
-                                            ("Dbar", -1.0, "o", r"$y=\overline{\Delta}$", 5)):
+    for obs, sign, color, marker, label, layer in (
+            ("W", 1.0, green, "D", r"$y=W$", 3),
+            ("Dbar", -1.0, purple, "^", r"$y=\overline{\Delta}$", 5)):
         ref = reference(data, obs)[0]
         y = np.array([data[(int(n), "open_site")][obs] for n in sizes])
         e = np.array([data[(int(n), "open_site")][f"{obs}_err"] for n in sizes])
@@ -581,13 +583,13 @@ def make_figure(data, results, path, scaled=True):
         grid_factor = 1.0 / grid_inv if scaled else 1.0
         low, high = band_envelope(results, obs, 1.0 / grid_inv, with_limit=False)
         edges = np.sort(np.vstack([sign * low * grid_factor, sign * high * grid_factor]), axis=0)
-        bottom.fill_between(grid_inv, edges[0], edges[1], color=blue, alpha=0.3, linewidth=0)
+        bottom.fill_between(grid_inv, edges[0], edges[1], color=color, alpha=0.3, linewidth=0)
         series, _ = best["predict"](1.0 / grid_inv, with_limit=False)
-        bottom.plot(grid_inv, sign * series * grid_factor, color=blue, linewidth=1.2, zorder=2)
+        bottom.plot(grid_inv, sign * series * grid_factor, color=color, linewidth=1.2, zorder=2)
         bottom.errorbar(inverse[fitted], values[fitted], yerr=errors[fitted], fmt=marker,
-                        color=blue, markersize=6, label=label, zorder=layer + 1)
+                        color=color, markersize=7, label=label, zorder=layer + 1)
         bottom.errorbar(inverse[~fitted], values[~fitted], yerr=errors[~fitted], fmt=marker,
-                        color=blue, markersize=8 if obs == "W" else 6, mfc="white", mew=1.3,
+                        color=color, markersize=9 if obs == "W" else 7, mfc="white", mew=1.3,
                         zorder=layer)
     bottom.set_xlabel(r"$1/N_s$")
     bottom.set_xlim(0.0, 0.26)
