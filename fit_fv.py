@@ -569,8 +569,8 @@ def make_figure(data, results, path, scaled=True):
     # W is drawn first so that the gap point at N_s = 4, which nearly coincides
     # with the W point there, stays visible on top of it.
     for obs, sign, color, marker, label, layer in (
-            ("W", 1.0, green, "D", r"$y=W$", 3),
-            ("Dbar", -1.0, purple, "^", r"$y=\overline{\Delta}$", 5)):
+            ("W", 1.0, purple, "D", r"$y=W$", 3),
+            ("Dbar", -1.0, green, "^", r"$y=\overline{\Delta}$", 5)):
         ref = reference(data, obs)[0]
         y = np.array([data[(int(n), "open_site")][obs] for n in sizes])
         e = np.array([data[(int(n), "open_site")][f"{obs}_err"] for n in sizes])
