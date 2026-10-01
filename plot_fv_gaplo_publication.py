@@ -8,16 +8,29 @@ from scipy.stats import chi2 as chi2_dist, f as f_dist
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# LaTeX-style serif fonts to match standard PRD/PRB publication look.
+
+# Okabe--Ito colorblind-safe palette.  The physical-series mapping matches
+# paper Figures 5--7: OBC/without knitting is blue, PBC/with knitting is
+# vermillion, derived extrapolations are bluish green, and references are black.
+OI_ORANGE = "#E69F00"
+OI_SKY_BLUE = "#56B4E9"
+OI_BLUISH_GREEN = "#009E73"
+OI_BLUE = "#0072B2"
+OI_VERMILLION = "#D55E00"
+OI_REDDISH_PURPLE = "#CC79A7"
+OI_BLACK = "#000000"
+# Render all text through LaTeX using the same Latin Modern package as the
+# manuscript, rather than Matplotlib's built-in Computer Modern approximation.
 plt.rcParams.update({
+    "text.usetex": True,
     "font.family": "serif",
-    "font.serif": ["Computer Modern Roman", "DejaVu Serif"],
-    "mathtext.fontset": "cm",
-    "axes.labelsize": 14,
-    "axes.titlesize": 14,
-    "xtick.labelsize": 12,
-    "ytick.labelsize": 12,
-    "legend.fontsize": 11,
+    "font.serif": ["Latin Modern Roman"],
+    "text.latex.preamble": r"\usepackage{lmodern}\usepackage{amsmath}",
+    "axes.labelsize": 20,
+    "axes.titlesize": 20,
+    "xtick.labelsize": 17,
+    "ytick.labelsize": 17,
+    "legend.fontsize": 16,
 })
 
 # Empirical convergence drift per (L, boundary), measured from the most recent
@@ -354,22 +367,21 @@ s_p_meas = [s for L, s in zip(L_g_pbc, s_g_pbc) if L < 18]
 plateau_mean = _mean18   # L=10..16 PBC mean (same as _mean for L=24 override)
 plateau_std  = _std18    # L=10..16 PBC sample std
 ax.fill_between([3.5, 28.5], plateau_mean - plateau_std, plateau_mean + plateau_std,
-                color="tab:red", alpha=0.18, zorder=2,
+                color=OI_VERMILLION, alpha=0.18, zorder=2,
                 label=r"PBC plateau ($L\!\in\![10,16]$)")
-ax.axhline(plateau_mean, color="tab:red", linestyle="--",
+ax.axhline(plateau_mean, color=OI_VERMILLION, linestyle="--",
            linewidth=1.2, alpha=0.7, zorder=3)
 
 # PBC first so the legend matches top→bottom data ordering (PBC sits ~1.466, OBC ~1.45).
-ax.errorbar(L_p_meas, g_p_meas, yerr=s_p_meas, fmt="s", color="tab:red",
-            capsize=3, markersize=7, label="PBC", zorder=5)
-ax.errorbar(L_of, g_of, yerr=s_of, fmt="o", color="tab:blue",
-            capsize=3, markersize=7, label="OBC", zorder=5)
-ax.errorbar(L_oe, g_oe, yerr=s_oe, fmt="o", color="tab:blue",
-            capsize=3, markersize=7, mfc="white", mew=1.4, zorder=5)
+ax.errorbar(L_p_meas, g_p_meas, yerr=s_p_meas, fmt="s", color=OI_VERMILLION,
+            capsize=3, markersize=9, label="PBC", zorder=5)
+ax.errorbar(L_of, g_of, yerr=s_of, fmt="o", color=OI_BLUE,
+            capsize=3, markersize=9, label="OBC", zorder=5)
+ax.errorbar(L_oe, g_oe, yerr=s_oe, fmt="o", color=OI_BLUE,
+            capsize=3, markersize=9, mfc="white", mew=1.4, zorder=5)
 
-ax.set_ylabel(r"$\overline{g}_{O_{p=0}}\ \equiv\ \sum_k w_k\, g_k / \sum_k w_k\ \ (g_k<2)$",
-              fontsize=14)
-ax.legend(loc="center right", frameon=False, fontsize=13)
+ax.set_ylabel(r"$\overline{g}_{\mathcal{O}_{p=0}}$")
+ax.legend(loc="lower right", frameon=False)
 ax.grid(True, alpha=0.3)
 
 # Difference panel
@@ -405,12 +417,12 @@ Ld_e = [L for L, m in zip(Ls_diff, excl_mask) if m]
 d_e  = [d for d, m in zip(diffs,  excl_mask)  if m]
 e_e  = [e for e, m in zip(errs,   excl_mask)  if m]
 
-ax2.errorbar(Ld_f, d_f, yerr=e_f, fmt="d", color="black", capsize=3, markersize=6)
-ax2.errorbar(Ld_e, d_e, yerr=e_e, fmt="d", color="black", capsize=3, markersize=6,
+ax2.errorbar(Ld_f, d_f, yerr=e_f, fmt="o", color=OI_BLACK, capsize=3, markersize=8)
+ax2.errorbar(Ld_e, d_e, yerr=e_e, fmt="o", color=OI_BLACK, capsize=3, markersize=8,
              mfc="white", mew=1.4)
 ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
-ax2.set_xlabel(r"$L$  (matter sites)", fontsize=15)
-ax2.set_ylabel(r"OBC $-$ PBC", fontsize=14)
+ax2.set_xlabel(r"$L$")
+ax2.set_ylabel(r"$\overline{g}_{\mathrm{OBC}}-\overline{g}_{\mathrm{PBC}}$")
 ax2.set_xticks([4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26])
 ax2.grid(True, alpha=0.3)
 
@@ -452,13 +464,13 @@ def _f_exp_pinned(L, a, b):     return a + b*np.exp(-M_MESON*L)
 # Each spec is (label, fn, p0, color, bounds).  bounds=None means unconstrained;
 # otherwise a 2-tuple of (lower, upper) arrays passed to curve_fit.
 fit_specs = [
-    ("$a + b/L$",            _f_invL,            [0.0, -0.3],         "tab:purple", None),
-    ("$a + b/L^2$",          _f_invL2,           [0.0, -2.0],         "tab:olive",  None),
-    ("$a + b/L + c/L^2$",    _f_invL_plus_invL2, [0.0, -0.3, -0.5],   "tab:green",  None),
-    ("$a + b/L^\\beta$",     _f_invL_beta,       [0.0, -0.3, 1.0],    "tab:pink",
+    ("$a + b/L$",            _f_invL,            [0.0, -0.3],         OI_BLUE, None),
+    ("$a + b/L^2$",          _f_invL2,           [0.0, -2.0],         OI_ORANGE, None),
+    ("$a + b/L + c/L^2$",    _f_invL_plus_invL2, [0.0, -0.3, -0.5],   OI_BLUISH_GREEN, None),
+    ("$a + b/L^\\beta$",     _f_invL_beta,       [0.0, -0.3, 1.0],    OI_REDDISH_PURPLE,
         ([-np.inf, -np.inf, 0.5], [np.inf, np.inf, 3.0])),
     (f"$a + b e^{{-m_{{\\rm meson}} L}}$ (pinned)",
-                             _f_exp_pinned,      [0.0, -0.3],         "tab:brown", None),
+                             _f_exp_pinned,      [0.0, -0.3],         OI_SKY_BLUE, None),
 ]
 
 def _fmt_value_sigma(value, sigma):
@@ -517,7 +529,6 @@ for label, fn, p0, color, bounds in fit_specs:
     except Exception as e:
         print(f"  fit {label} failed: {e}")
 
-ax2.legend(loc="lower right", fontsize=7.5)
 ax2.set_xlim(3.5, 28.5)
 
 print()
@@ -806,12 +817,12 @@ if combo_results:
     ax2.fill_between(Lplot[L_show],
                      aic_curve_mean[L_show] - aic_curve_sigma[L_show],
                      aic_curve_mean[L_show] + aic_curve_sigma[L_show],
-                     color="violet", alpha=0.45, zorder=9,
+                     color=OI_BLUISH_GREEN, alpha=0.25, zorder=9,
                      label=None)
-    ax2.plot(Lplot[L_show], aic_curve_mean[L_show], "-", color="purple",
+    ax2.plot(Lplot[L_show], aic_curve_mean[L_show], "-", color=OI_BLUISH_GREEN,
              linewidth=2.5, alpha=1.0, zorder=11,
              label=fr"$a_\infty={a_avg:+.3f}\pm{sigma_tot:.3f}$")
-    ax2.legend(loc="lower right", frameon=False, fontsize=13)
+    ax2.legend(loc="lower right", frameon=False)
     # Scale y-axis to the data envelope, not the AIC band — the band grows
     # large at high L and would otherwise compress the points to invisibility.
     # The band will be cropped where it exceeds this range; this is by design.
@@ -823,7 +834,7 @@ if combo_results:
           f"σ_band at L=6: {aic_curve_sigma[L_show][0]:.4f}, "
           f"at L=18: {aic_curve_sigma[Lplot >= 18][0]:.4f}, "
           f"at L=28: {aic_curve_sigma[-1]:.4f}")
-    ax2.legend(loc="lower right", frameon=False, fontsize=13)
+    ax2.legend(loc="lower right", frameon=False)
 plt.tight_layout()
 for ext in ("png", "pdf"):
     out = DATA / f"fv_gaplo_publication.{ext}"
