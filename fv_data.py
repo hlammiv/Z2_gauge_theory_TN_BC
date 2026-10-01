@@ -53,6 +53,7 @@ PREVIOUS = {
     (18, "open_site"): (DATA / "L18_nsw2560" / "z2_gauge_theory", "*.csv"),
     (18, "PBC"): (GAUGE, f"{PREFIX}_L18_PBC_patched_warm1280_seed*.csv"),
     (24, "open_site"): (GAUGE, f"{PREFIX}_L24_OBC_warm4_k40_seed*.csv"),
+    (24, "PBC"): (GAUGE, f"{PREFIX}_L24_PBC_bench_spec_k40.csv"),
 }
 
 # Exact diagonalisation at N_s = 4, 6 (written by exact_diag_small.jl).

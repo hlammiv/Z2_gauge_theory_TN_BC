@@ -486,7 +486,7 @@ def make_figure(data, results, path):
     top.set_ylabel(r"$\overline{\Delta}$")
     top.set_xticks(fv_data.SIZES)
     top.set_xlim(3, 25.5)
-    top.set_ylim(1.405, 1.475)
+    top.set_ylim(1.405, 1.482)
     top.legend(loc="lower right", frameon=False)
     top.grid(alpha=0.15)
 
