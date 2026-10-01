@@ -12,7 +12,7 @@ second order, a single power N_s^-beta, or an exponential.  Each form is fitted
 to N_s = N_min..18; N_s = 24 is held out and predicted.  The limit a is either
 tied to the PBC value ("common limit") or left free.
 
-Outputs (under --paper-dir): generated/fv_fit_results.json, three generated
+Outputs (under --paper-dir): generated/fv_fit_results.json, two generated
 LaTeX tables, and figures/fv_gaplo.pdf.
 
     python3 fit_fv.py
@@ -301,14 +301,10 @@ def write_data_table(data, path):
         mark = r"$^{*}$" if n == HELD_OUT else ""
         lines.append(f"{n}{mark} & " + " & ".join(cells) + r" \\")
     lines += [r"\hline\hline", r"\end{tabular}",
-              r"\caption{Weighted gap $\overline{\Delta}$ and summed weight $W$ of the "
-              r"single-meson band, Eqs.~\eqref{eq:Wdef} and~\eqref{eq:Dbardef}, for periodic "
-              r"and open boundary conditions at $(m_0,\eta)=(0.1,0.5)$.  Uncertainties on "
-              r"$\overline{\Delta}$ are dominated by bounds from the energy variance of the "
-              r"DMRG states and by the change in the last refinement stage, and are not "
-              r"statistical; those on $W$ combine the scatter among starting states, the difference "
-              r"between the two implementations, and the change in the last refinement stage.  "
-              r"The starred size is not used in any fit.}",
+              r"\caption{Weighted gap $\overline{\Delta}$ and summed weight $W$, "
+              r"Eqs.~\eqref{eq:Dbardef} and~\eqref{eq:Wdef}, for periodic and open boundary "
+              r"conditions at $(m_0,\eta)=(0.1,0.5)$.  The starred size is not used in any "
+              r"fit.}",
               r"\label{tab:fv-data}", r"\end{table*}"]
     path.write_text("\n".join(lines) + "\n")
 
@@ -326,7 +322,7 @@ def _fit_row_cells(results, obs, model):
     return cells
 
 
-def write_fit_detail_table(results, path):
+def write_fit_table(results, path):
     columns = (r"$\chi^2/{\rm dof}$ & $\chi^2/{\rm dof}$ & $N_{\min}^{\rm acc}$ & pull")
     lines = [HEADER.rstrip(), r"\begin{table*}[t]", r"\centering",
              r"\begin{tabular}{l|cccc|cccc}\hline\hline",
@@ -342,74 +338,12 @@ def write_fit_detail_table(results, path):
         if model in ("P3", "Q3"):
             lines.append(r"\hline")
     lines += [r"\hline\hline", r"\end{tabular}",
-              r"\caption{Tests of the functional form with which the open-boundary results "
-              r"approach the infinite-volume value $y_\infty$, taken from the periodic "
-              r"lattice.  Each form is fitted to $N_{\min}\le N_s\le 18$.  For each observable "
-              r"the first two columns give $\chi^2/{\rm dof}$ for $N_{\min}=4$ and $6$; "
-              r"$N_{\min}^{\rm acc}$ is the smallest $N_{\min}$ at which the form is not "
-              r"rejected at the 5\% level (a dash means it is rejected for every "
-              r"$N_{\min}\le 12$); and the pull is the deviation of the measured $N_s=24$ "
-              r"value from the prediction of that fit, in units of the combined uncertainty.  "
-              r"In the last row the rate is fixed to the meson gap $M=\overline{\Delta}_\infty$.}",
-              r"\label{tab:fv-fits-full}", r"\end{table*}"]
-    path.write_text("\n".join(lines) + "\n")
-
-
-def write_fit_table(results, path):
-    """Compact main-text table: smallest acceptable N_min for each form."""
-    lines = [HEADER.rstrip(), r"\begin{table}[t]", r"\centering",
-             r"\begin{tabular}{l@{\qquad}c@{\qquad}c}\hline\hline",
-             r"$y_{\rm OBC}(N_s)-y_{\infty}$ & $\overline{\Delta}$ & $W$ \\ \hline"]
-    for model in MODELS:
-        cells = []
-        for obs in OBSERVABLES:
-            best = smallest_acceptable(results, obs, "common", model)
-            cells.append("--" if best is None else str(best["n_min"]))
-        lines.append(f"${MODELS[model][0]}$ & " + " & ".join(cells) + r" \\")
-        if model in ("P3", "Q3"):
-            lines.append(r"\hline")
-    lines += [r"\hline\hline", r"\end{tabular}",
-              r"\caption{Smallest $N_{\min}$ for which each form of the finite-volume "
-              r"correction describes the OBC results with $N_{\min}\le N_s\le 18$, for the "
-              r"weighted gap and the summed weight.  A smaller value means the form holds down "
-              r"to smaller lattices; a dash means it is rejected for every $N_{\min}\le 12$.  "
-              r"In the last row the rate is fixed to $M=\overline{\Delta}_\infty$.}",
-              r"\label{tab:fv-fits}", r"\end{table}"]
-    path.write_text("\n".join(lines) + "\n")
-
-
-def write_grid_table(results, path):
-    lines = [HEADER.rstrip(), r"\begin{table*}[t]", r"\centering",
-             r"\begin{tabular}{ll|ccc|ccc}\hline\hline",
-             r" & & \multicolumn{3}{c|}{$\overline{\Delta}$} & \multicolumn{3}{c}{$W$} \\",
-             r"form & $N_{\min}$ & $\chi^2/{\rm dof}$ & $y_\infty^{\rm OBC}-y_\infty^{\rm PBC}$ "
-             r"& pull & $\chi^2/{\rm dof}$ & $y_\infty^{\rm OBC}-y_\infty^{\rm PBC}$ & pull "
-             r"\\ \hline"]
-    for model in MODELS:
-        first = True
-        for n_min in N_MIN_VALUES:
-            cells = []
-            for obs in OBSERVABLES:
-                r = select(results, obs, "free", model, n_min)
-                if r is None:
-                    cells += ["", "", ""]
-                    continue
-                cells += [chi2_tex(r["chi2"], r["dof"]),
-                          f"${pm(r['limit_minus_pbc'], r['limit_minus_pbc_err'], sign=True)}$",
-                          pull_tex(r["held_out_pull"])]
-            if not any(cells):
-                continue
-            label = f"${MODELS[model][0]}$" if first else ""
-            first = False
-            lines.append(f"{label} & {n_min} & " + " & ".join(cells) + r" \\")
-        lines.append(r"\hline")
-    lines += [r"\hline", r"\end{tabular}",
-              r"\caption{Fits of $y_{\rm OBC}(N_s)=y_\infty^{\rm OBC}+g(N_s)$ to "
-              r"$N_{\min}\le N_s\le 18$ with the limit $y_\infty^{\rm OBC}$ left free, for each "
-              r"form $g$ of Table~\ref{tab:fv-fits-full}.  The fitted limit is given relative to the "
-              r"periodic value, and the pull compares the measured $N_s=24$ value with the "
-              r"prediction of the fit.}",
-              r"\label{tab:fv-grid}", r"\end{table*}"]
+              r"\caption{Fits of each form of the finite-volume correction to the OBC results "
+              r"with $N_{\min}\le N_s\le 18$: $\chi^2/{\rm dof}$ for $N_{\min}=4$ and $6$, the "
+              r"smallest $N_{\min}$ at which the form is acceptable (a dash if none up to $12$), "
+              r"and the deviation of the measured $N_s=24$ value from the prediction of that fit "
+              r"in units of the combined uncertainty.}",
+              r"\label{tab:fv-fits}", r"\end{table*}"]
     path.write_text("\n".join(lines) + "\n")
 
 
@@ -670,8 +604,6 @@ def main():
         json.dumps(summary_dict(data, results), indent=1) + "\n")
     write_data_table(data, generated / "fv_data_table.tex")
     write_fit_table(results, generated / "fv_fit_results.tex")
-    write_fit_detail_table(results, generated / "fv_fit_details.tex")
-    write_grid_table(results, generated / "fv_fit_grid.tex")
     if not args.no_figure:
         make_figure(data, results, args.paper_dir / "figures" / "fv_gaplo.pdf")
     print(f"\nwrote outputs under {args.paper_dir}")

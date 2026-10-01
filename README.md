@@ -60,7 +60,7 @@ paper:
 - `fit_fv.py` — tests which functional form describes the OBC approach to the
   PBC value (series from 1/N_s, series from 1/N_s², single power,
   exponential), with N_s = 24 held out.  Writes
-  `paper/generated/fv_fit_results.json`, the three `fv_*.tex` tables and
+  `paper/generated/fv_fit_results.json`, the two `fv_*.tex` tables and
   `paper/figures/fv_gaplo.pdf` in the `circuit_knitting` repository
   (`--paper-dir` to change).
 - `test_fit_fv.py` — `python3 -m pytest test_fit_fv.py`.
