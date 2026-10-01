@@ -350,7 +350,7 @@ def write_fit_table(results, path):
               r"rejected at the 5\% level (a dash means it is rejected for every "
               r"$N_{\min}\le 12$); and the pull is the deviation of the measured $N_s=24$ "
               r"value from the prediction of that fit, in units of the combined uncertainty.  "
-              r"In the last row the rate is fixed to the meson gap $M=\\overline{\\Delta}_\\infty$.}",
+              r"In the last row the rate is fixed to the meson gap $M=\overline{\Delta}_\infty$.}",
               r"\label{tab:fv-fits}", r"\end{table*}"]
     path.write_text("\n".join(lines) + "\n")
 
